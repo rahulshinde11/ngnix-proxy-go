@@ -1,0 +1,332 @@
+package processor
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/client"
+
+	"github.com/rahulshinde/nginx-proxy-go/internal/container"
+	"github.com/rahulshinde/nginx-proxy-go/internal/host"
+)
+
+// VirtualHostProcessor handles virtual host configuration
+type VirtualHostProcessor struct {
+	dockerClient *client.Client
+	knownNets    []string
+	ctx          context.Context
+}
+
+// NewVirtualHostProcessor creates a new VirtualHostProcessor
+func NewVirtualHostProcessor(dockerClient *client.Client, knownNets []string) *VirtualHostProcessor {
+	return &VirtualHostProcessor{
+		dockerClient: dockerClient,
+		knownNets:    knownNets,
+		ctx:          context.Background(),
+	}
+}
+
+// Process processes container information and returns virtual host configurations
+func (p *VirtualHostProcessor) Process(cont types.Container) ([]*host.Host, error) {
+	var hosts []*host.Host
+
+	// Get container info
+	containerJSON, err := p.dockerClient.ContainerInspect(p.ctx, cont.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container info: %v", err)
+	}
+
+	info := container.NewContainer(containerJSON)
+
+	// Convert knownNets slice to map for reachability check
+	knownNetsMap := make(map[string]string, len(p.knownNets))
+	for _, net := range p.knownNets {
+		knownNetsMap[net] = ""
+	}
+
+	// Check if container is reachable through known networks
+	if !info.IsReachable(knownNetsMap) {
+		log.Printf("Container %s is not reachable through known networks, skipping", info.Name)
+		return nil, nil
+	}
+
+	// Get virtual host configurations
+	virtualHosts := make([]string, 0)
+	for k, v := range info.Environment {
+		if strings.HasPrefix(k, "VIRTUAL_HOST") || strings.HasPrefix(k, "STATIC_VIRTUAL_HOST") {
+			virtualHosts = append(virtualHosts, v)
+		}
+	}
+
+	if len(virtualHosts) == 0 {
+		return nil, nil
+	}
+
+	// Process each virtual host
+	for _, vh := range virtualHosts {
+		hostname, port, path, extras, err := host.ParseVirtualHost(vh)
+		if err != nil {
+			log.Printf("Error parsing virtual host %s: %v", vh, err)
+			continue
+		}
+
+		// Create host configuration
+		h := host.NewHost(hostname, port)
+		h.IsStatic = strings.HasPrefix(vh, "STATIC_VIRTUAL_HOST")
+
+		// Set SSL if enabled
+		if info.Scheme == "https" {
+			h.SetSSL(true, fmt.Sprintf("/etc/nginx/certs/%s.crt", hostname))
+		}
+
+		// Convert extras to map
+		extrasMap := make(map[string]string)
+		for _, extra := range extras {
+			parts := strings.SplitN(extra, "=", 2)
+			if len(parts) == 2 {
+				extrasMap[parts[0]] = parts[1]
+			}
+		}
+
+		// Add default values if not present in extras
+		if _, ok := extrasMap["websocket"]; !ok {
+			extrasMap["websocket"] = "false"
+		}
+		if _, ok := extrasMap["http"]; !ok {
+			extrasMap["http"] = "true"
+		}
+		if _, ok := extrasMap["scheme"]; !ok {
+			extrasMap["scheme"] = info.Scheme
+		}
+		if _, ok := extrasMap["container_path"]; !ok {
+			extrasMap["container_path"] = "/"
+		}
+
+		// Add location
+		container := &host.Container{
+			ID:      info.ID,
+			Address: info.IPAddress,
+			Port:    info.Port,
+			Scheme:  info.Scheme,
+			Path:    path,
+		}
+		h.AddLocation(path, container, extrasMap)
+
+		// Add upstream
+		h.AddUpstream(info.ID, []*host.Container{container})
+
+		hosts = append(hosts, h)
+	}
+
+	return hosts, nil
+}
+
+// ProcessStaticHosts processes static virtual host configurations
+func (p *VirtualHostProcessor) ProcessStaticHosts(staticHosts []string) ([]*host.Host, error) {
+	var hosts []*host.Host
+
+	for _, vh := range staticHosts {
+		hostname, port, path, extras, err := host.ParseVirtualHost(vh)
+		if err != nil {
+			log.Printf("Error parsing static virtual host %s: %v", vh, err)
+			continue
+		}
+
+		// Create host configuration
+		h := host.NewHost(hostname, port)
+		h.IsStatic = true
+
+		// Convert extras to map
+		extrasMap := make(map[string]string)
+		for _, extra := range extras {
+			parts := strings.SplitN(extra, "=", 2)
+			if len(parts) == 2 {
+				extrasMap[parts[0]] = parts[1]
+			}
+		}
+
+		// Add location
+		container := &host.Container{
+			ID:      "",
+			Address: "",
+			Port:    0,
+			Scheme:  "",
+			Path:    path,
+		}
+		h.AddLocation(path, container, extrasMap)
+
+		hosts = append(hosts, h)
+	}
+
+	return hosts, nil
+}
+
+// ProcessVirtualHosts processes virtual host configurations from container environment variables
+func ProcessVirtualHosts(container types.ContainerJSON, env map[string]string, knownNetworks map[string]string) map[string]*host.Host {
+	hosts := make(map[string]*host.Host)
+
+	// Get virtual host configurations
+	virtualHosts := make([]string, 0)
+	staticHosts := make([]string, 0)
+	for k, v := range env {
+		if strings.HasPrefix(k, "VIRTUAL_HOST") {
+			virtualHosts = append(virtualHosts, v)
+		} else if strings.HasPrefix(k, "STATIC_VIRTUAL_HOST") {
+			staticHosts = append(staticHosts, v)
+		}
+	}
+
+	if len(virtualHosts) == 0 && len(staticHosts) == 0 {
+		return hosts
+	}
+
+	// Get container IP address from known networks
+	var containerIP string
+	for _, network := range container.NetworkSettings.Networks {
+		if network.NetworkID != "" && network.NetworkID == knownNetworks[network.NetworkID] {
+			containerIP = network.IPAddress
+			break
+		}
+	}
+
+	if containerIP == "" {
+		return hosts
+	}
+
+	// Process static hosts first
+	for _, hostConfig := range staticHosts {
+		h, location, containerData, extras := parseHostEntry(hostConfig)
+		if h == nil {
+			continue
+		}
+		containerData.ID = container.ID
+		containerData.Address = containerIP
+
+		// Set default ports based on scheme
+		if containerData.Port == 0 {
+			if containerData.Scheme == "https" || containerData.Scheme == "wss" {
+				containerData.Port = 443
+			} else {
+				containerData.Port = 80
+			}
+		}
+
+		// Set SSL based on scheme
+		h.SSLEnabled = h.Scheme == "https" || h.Scheme == "wss" || h.Port == 443
+		if h.Port == 0 {
+			h.Port = 443
+		}
+
+		// Add container to host
+		h.AddLocation(location, containerData, extras)
+		hosts[h.Hostname] = h
+	}
+
+	// Check for SSL and port overrides
+	overrideSSL := false
+	overridePort := ""
+	if len(virtualHosts) == 1 {
+		if _, ok := env["LETSENCRYPT_HOST"]; ok {
+			overrideSSL = true
+		}
+		if port, ok := env["VIRTUAL_PORT"]; ok {
+			overridePort = port
+		}
+	}
+
+	// Process virtual hosts
+	for _, hostConfig := range virtualHosts {
+		h, location, containerData, extras := parseHostEntry(hostConfig)
+		if h == nil {
+			continue
+		}
+		containerData.ID = container.ID
+		containerData.Address = containerIP
+
+		// Apply port override
+		if overridePort != "" {
+			port, err := strconv.Atoi(overridePort)
+			if err == nil {
+				containerData.Port = port
+			}
+		} else if containerData.Port == 0 {
+			// Use exposed ports or default
+			if len(container.Config.ExposedPorts) == 1 {
+				for port := range container.Config.ExposedPorts {
+					portStr := strings.Split(string(port), "/")[0]
+					if port, err := strconv.Atoi(portStr); err == nil {
+						containerData.Port = port
+						break
+					}
+				}
+			} else {
+				containerData.Port = 80
+			}
+		}
+
+		// Apply SSL override
+		if overrideSSL {
+			if strings.Contains(h.Scheme, "ws") {
+				h.Scheme = "wss"
+				h.SSLEnabled = true
+			} else {
+				h.Scheme = "https"
+				h.SSLEnabled = true
+			}
+		}
+
+		// Set SSL based on scheme and port
+		h.SSLEnabled = h.SSLEnabled || h.Scheme == "https" || h.Scheme == "wss" || h.Port == 443
+		if h.Port == 0 {
+			h.Port = 443
+		}
+
+		// Add container to host
+		h.AddLocation(location, containerData, extras)
+		hosts[h.Hostname] = h
+	}
+
+	return hosts
+}
+
+// parseHostEntry parses a host entry and returns the host, location, container data, and extras
+func parseHostEntry(hostConfig string) (*host.Host, string, *host.Container, map[string]string) {
+	hostname, port, path, extras, err := host.ParseVirtualHost(hostConfig)
+	if err != nil {
+		log.Printf("Error parsing virtual host %s: %v", hostConfig, err)
+		return nil, "", nil, nil
+	}
+
+	// Create host configuration
+	h := host.NewHost(hostname, port)
+	h.IsStatic = strings.HasPrefix(hostConfig, "STATIC_VIRTUAL_HOST")
+
+	// Convert extras to map
+	extrasMap := make(map[string]string)
+	for _, extra := range extras {
+		parts := strings.SplitN(extra, "=", 2)
+		if len(parts) == 2 {
+			extrasMap[parts[0]] = parts[1]
+		}
+	}
+
+	// Add location
+	location := path
+	if location == "" {
+		location = "/"
+	}
+
+	// Create container data
+	containerData := &host.Container{
+		Address: hostname,
+		Port:    port,
+		Scheme:  h.Scheme,
+		Path:    location,
+	}
+
+	return h, location, containerData, extrasMap
+}

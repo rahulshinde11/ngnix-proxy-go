@@ -1,0 +1,5 @@
+[2025-06-04 04:35:05.879] INFO [webserver.go:543] No HOSTNAME set, using development hostname: nginx-proxy-dev
+[2025-06-04 04:35:05.881] WARN [webserver.go:550] Failed to inspect container (this is normal in development): Error response from daemon: {"message":"No such container: nginx-proxy-dev"}
+[2025-06-04 04:35:05.881] INFO [webserver.go:78] WebServer initialized successfully
+[2025-06-04 04:35:05.881] INFO [webserver.go:336] Starting WebServer...
+[2025-06-04 04:35:05.881] INFO [webserver.go:601] Container rescan completed: found 0 containers
