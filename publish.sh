@@ -110,7 +110,7 @@ build_image_multiplatform() {
     fi
     
     # Add tags
-    buildx_cmd="$buildx_cmd -t $IMAGE_NAME:$version_tag -t $IMAGE_NAME:latclearest"
+    buildx_cmd="$buildx_cmd -t $IMAGE_NAME:$version_tag -t $IMAGE_NAME:latest"
     
     # Add push flag if needed
     if [ "$push_flag" = "true" ]; then
