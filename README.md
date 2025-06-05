@@ -2,6 +2,10 @@
 
 A Docker container for automatically creating nginx configuration based on active containers in docker host, written in Go.
 
+## ⚠️ Development Warning
+
+**This project is still in active development and should be used at your own risk.** While we strive to maintain stability, breaking changes may occur without notice. Please test thoroughly in a non-production environment before deploying to production systems.
+
 ## Features
 
 - Easy server configuration with environment variables
