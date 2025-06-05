@@ -10,6 +10,49 @@ import (
 	"time"
 )
 
+// Manager represents the ACME certificate manager
+type Manager struct {
+	apiURL       string
+	challengeDir string
+	renewBefore  time.Duration
+	mu           sync.RWMutex
+}
+
+// NewManager creates a new ACME manager
+func NewManager(apiURL, challengeDir string) *Manager {
+	return &Manager{
+		apiURL:       apiURL,
+		challengeDir: challengeDir,
+		renewBefore:  30 * 24 * time.Hour, // Renew 30 days before expiration
+	}
+}
+
+// ObtainCertificate obtains a certificate for the specified domain
+func (m *Manager) ObtainCertificate(domain, certPath, keyPath, accountKeyPath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Create ACME client for this request
+	acme := NewACMEv2(
+		m.apiURL,
+		accountKeyPath,
+		keyPath,
+		certPath,
+		m.challengeDir,
+		[]string{domain},
+		false, // debug
+		false, // skipReload
+		"",    // dnsProvider
+	)
+
+	// Get the certificate
+	if err := acme.GetCertificate(); err != nil {
+		return fmt.Errorf("failed to obtain certificate: %v", err)
+	}
+
+	return nil
+}
+
 // CertificateManager manages SSL certificates
 type CertificateManager struct {
 	acme        *ACMEv2

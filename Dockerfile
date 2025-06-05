@@ -18,6 +18,9 @@ COPY . .
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -o nginx-proxy-go .
 
+# Build getssl command
+RUN CGO_ENABLED=0 GOOS=linux go build -o getssl ./cmd/getssl
+
 # Install Delve
 RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
@@ -31,6 +34,7 @@ RUN apk add --no-cache nginx openssl
 
 # Copy the binary from builder
 COPY --from=builder /app/nginx-proxy-go .
+COPY --from=builder /app/getssl /usr/local/bin/
 COPY --from=builder /go/bin/dlv /usr/local/bin/
 
 # Copy nginx configuration

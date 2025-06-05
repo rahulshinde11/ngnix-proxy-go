@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/client"
+	"github.com/rahulshinde/nginx-proxy-go/internal/acme"
 	"github.com/rahulshinde/nginx-proxy-go/internal/config"
 	"github.com/rahulshinde/nginx-proxy-go/internal/container"
 	"github.com/rahulshinde/nginx-proxy-go/internal/errors"
@@ -19,21 +20,25 @@ import (
 	"github.com/rahulshinde/nginx-proxy-go/internal/logger"
 	"github.com/rahulshinde/nginx-proxy-go/internal/nginx"
 	"github.com/rahulshinde/nginx-proxy-go/internal/processor"
+	"github.com/rahulshinde/nginx-proxy-go/internal/ssl"
 )
 
 // WebServer represents the main nginx proxy server
 type WebServer struct {
-	client             *client.Client
-	config             *config.Config
-	nginx              *nginx.Nginx
-	hosts              map[string]*host.Host
-	containers         map[string]*container.Container
-	networks           map[string]string
-	mu                 sync.RWMutex
-	template           *nginx.Template
-	basicAuthProcessor *processor.BasicAuthProcessor
-	eventProcessor     *event.Processor
-	log                *logger.Logger
+	client                 *client.Client
+	config                 *config.Config
+	nginx                  *nginx.Nginx
+	hosts                  map[string]*host.Host
+	containers             map[string]*container.Container
+	networks               map[string]string
+	mu                     sync.RWMutex
+	template               *nginx.Template
+	basicAuthProcessor     *processor.BasicAuthProcessor
+	redirectProcessor      *processor.RedirectProcessor
+	defaultServerProcessor *processor.DefaultServerProcessor
+	certificateManager     *ssl.CertificateManager
+	eventProcessor         *event.Processor
+	log                    *logger.Logger
 }
 
 // NewWebServer creates a new WebServer instance
@@ -46,14 +51,27 @@ func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error)
 		return nil, errors.New(errors.ErrorTypeSystem, "failed to initialize logger", err)
 	}
 
+	// Create ACME manager
+	apiURL := os.Getenv("LETSENCRYPT_API")
+	if apiURL == "" {
+		apiURL = "https://acme-v02.api.letsencrypt.org/directory"
+	}
+	acmeManager := acme.NewManager(apiURL, cfg.ChallengeDir)
+
+	// Create certificate manager
+	certManager := ssl.NewCertificateManager("/etc/ssl", acmeManager, logger)
+
 	ws := &WebServer{
-		client:             client,
-		config:             cfg,
-		hosts:              make(map[string]*host.Host),
-		containers:         make(map[string]*container.Container),
-		networks:           make(map[string]string),
-		basicAuthProcessor: processor.NewBasicAuthProcessor(filepath.Join(cfg.ConfDir, "basic_auth")),
-		log:                logger,
+		client:                 client,
+		config:                 cfg,
+		hosts:                  make(map[string]*host.Host),
+		containers:             make(map[string]*container.Container),
+		networks:               make(map[string]string),
+		basicAuthProcessor:     processor.NewBasicAuthProcessor(filepath.Join(cfg.ConfDir, "basic_auth")),
+		redirectProcessor:      processor.NewRedirectProcessor(logger),
+		defaultServerProcessor: processor.NewDefaultServerProcessor(logger),
+		certificateManager:     certManager,
+		log:                    logger,
 	}
 
 	// Initialize nginx
