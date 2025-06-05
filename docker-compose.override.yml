@@ -10,8 +10,8 @@ services:
       - .:/app/src:cached
       # Keep these as named volumes for persistence
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./ssl:/etc/ssl
       - nginx-proxy-go-nginx:/etc/nginx
-      - nginx-proxy-go-ssl:/etc/ssl
       - nginx-proxy-go-acme:/tmp/acme-challenges
       # Cache Go modules and build cache
       - go-mod-cache:/go/pkg/mod

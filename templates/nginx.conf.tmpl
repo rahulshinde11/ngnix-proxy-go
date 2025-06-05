@@ -22,7 +22,8 @@ upstream {{.ID}} {
 {{if .SSLEnabled}}
 server {
     server_name {{.Hostname}};
-    listen {{.Port}} ssl http2 {{if .IsDefaultServer}}default_server{{end}};
+    listen {{.Port}} ssl {{if .IsDefaultServer}}default_server{{end}};
+    http2 on;
     ssl_certificate /etc/ssl/certs/{{.SSLFile}}.crt;
     ssl_certificate_key /etc/ssl/private/{{.SSLFile}}.key;
 

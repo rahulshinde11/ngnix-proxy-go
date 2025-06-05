@@ -14,7 +14,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - nginx-proxy-go-nginx:/etc/nginx
-      - nginx-proxy-go-ssl:/etc/ssl
+      - ./ssl:/etc/ssl
       - nginx-proxy-go-acme:/tmp/acme-challenges
     ports:
       - "2345:2345" # Delve debug port

@@ -634,6 +634,51 @@ func (ws *WebServer) reload() error {
 		}
 	}
 
+	// Process SSL certificates for hosts that require them
+	for hostname, h := range ws.hosts {
+		if h.SSLEnabled {
+			// Adjust port for SSL - if port is 80 or 443, set to 443 and enable SSL redirect
+			if h.Port == 80 || h.Port == 443 {
+				h.Port = 443
+				h.SSLRedirect = true
+				ws.log.Debug("SSL enabled for %s: changed port to 443 and enabled SSL redirect", hostname)
+			}
+
+			// Check if certificate files exist
+			certPath := filepath.Join("/etc/ssl/certs", hostname+".crt")
+			keyPath := filepath.Join("/etc/ssl/private", hostname+".key")
+
+			if _, err := os.Stat(certPath); err == nil {
+				if _, err := os.Stat(keyPath); err == nil {
+					// Both certificate and key files exist
+					h.SSLFile = hostname
+					ws.log.Debug("Found existing SSL certificate for %s", hostname)
+				} else {
+					ws.log.Warn("Certificate exists but key file missing for %s, disabling SSL", hostname)
+					h.SSLEnabled = false
+				}
+			} else {
+				// Check for self-signed certificate
+				selfSignedCertPath := filepath.Join("/etc/ssl/certs", hostname+".selfsigned.crt")
+				selfSignedKeyPath := filepath.Join("/etc/ssl/private", hostname+".selfsigned.key")
+
+				if _, err := os.Stat(selfSignedCertPath); err == nil {
+					if _, err := os.Stat(selfSignedKeyPath); err == nil {
+						// Self-signed certificate exists
+						h.SSLFile = hostname + ".selfsigned"
+						ws.log.Debug("Found existing self-signed SSL certificate for %s", hostname)
+					} else {
+						ws.log.Warn("Self-signed certificate exists but key file missing for %s, disabling SSL", hostname)
+						h.SSLEnabled = false
+					}
+				} else {
+					ws.log.Warn("No SSL certificate found for %s, disabling SSL", hostname)
+					h.SSLEnabled = false
+				}
+			}
+		}
+	}
+
 	config, err := ws.template.Render(ws.hosts, ws.config)
 	if err != nil {
 		ws.log.Error("Failed to render nginx template: %v", err)

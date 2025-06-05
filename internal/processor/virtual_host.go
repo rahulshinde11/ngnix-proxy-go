@@ -81,7 +81,7 @@ func (p *VirtualHostProcessor) Process(cont types.Container) ([]*host.Host, erro
 
 		// Set SSL if enabled (for https or wss schemes)
 		if config.Scheme == "https" || config.Scheme == "wss" {
-			h.SetSSL(true, fmt.Sprintf("/etc/nginx/certs/%s.crt", config.Hostname))
+			h.SetSSL(true, config.Hostname)
 		}
 
 		// Convert extras to map
@@ -148,7 +148,7 @@ func (p *VirtualHostProcessor) ProcessStaticHosts(staticHosts []string) ([]*host
 
 		// Set SSL if enabled (for https or wss schemes)
 		if config.Scheme == "https" || config.Scheme == "wss" {
-			h.SetSSL(true, fmt.Sprintf("/etc/nginx/certs/%s.crt", config.Hostname))
+			h.SetSSL(true, config.Hostname)
 		}
 
 		// Convert extras to map
@@ -321,7 +321,7 @@ func parseHostEntry(hostConfig string) (*host.Host, string, *host.Container, map
 
 	// Set SSL if enabled (for https or wss schemes)
 	if config.Scheme == "https" || config.Scheme == "wss" {
-		h.SetSSL(true, fmt.Sprintf("/etc/nginx/certs/%s.crt", config.Hostname))
+		h.SetSSL(true, config.Hostname)
 	}
 
 	// Convert extras to map
