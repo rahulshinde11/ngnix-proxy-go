@@ -30,7 +30,7 @@ docker run --network frontend \
     -p 80:80 \
     -p 443:443 \
     -d --restart always \
-    rahulshinde/nginx-proxy-go
+    shinde11/nginx-proxy
 ```
 
 ### Setup your container

@@ -32,6 +32,9 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apk add --no-cache nginx openssl
 
+ENV NGINX_CONF_DIR=/etc/nginx
+ENV CHALLENGE_DIR=/tmp/acme-challenges
+ENV SSL_DIR=/etc/ssl
 # Copy the binary from builder
 COPY --from=builder /app/nginx-proxy-go .
 COPY --from=builder /app/getssl /usr/local/bin/
@@ -39,6 +42,9 @@ COPY --from=builder /go/bin/dlv /usr/local/bin/
 
 # Copy nginx configuration
 COPY nginx/nginx.conf /etc/nginx/nginx.conf
+
+# Copy nginx template
+COPY templates/ ./templates/
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh /docker-entrypoint.sh

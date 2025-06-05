@@ -1,0 +1,233 @@
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+proxy_cache off;
+proxy_request_buffering off;
+
+# Client configuration override
+client_max_body_size {{.Config.ClientMaxBodySize}};
+
+{{range .Hosts}}
+{{range .Upstreams}}
+upstream {{.ID}} {
+    {{range .Containers}}
+    server {{.Address}}:{{.Port}} max_fails=3 fail_timeout=30s;
+    {{end}}
+    keepalive 32;
+}
+{{end}}
+
+{{if .SSLEnabled}}
+server {
+    server_name {{.Hostname}};
+    listen {{.Port}} ssl http2 {{if .IsDefaultServer}}default_server{{end}};
+    ssl_certificate /etc/ssl/certs/{{.SSLFile}}.crt;
+    ssl_certificate_key /etc/ssl/private/{{.SSLFile}}.key;
+
+    {{if .IsRedirect}}
+    return 301 https://{{.RedirectHostname}}$request_uri;
+    {{else if .IsDown}}
+    return 503;
+    {{else}}
+    {{if .BasicAuth}}
+    auth_basic "Basic Auth Enabled";
+    auth_basic_user_file {{.BasicAuthFile}};
+    {{end}}
+
+    # Global injected configs
+    {{range $key, $value := .Extras.ToMap}}
+    {{if eq $key "injected"}}
+    {{range $config := $value}}
+    {{$config}};
+    {{end}}
+    {{else if eq $key "security"}}
+    {{range $username, $password := $value}}
+    auth_basic_user_file {{$.BasicAuthFile}};
+    {{end}}
+    {{else}}
+    {{$key}} {{$value}};
+    {{end}}
+    {{end}}
+
+    {{range .Locations}}
+    location {{.Path}} {
+        # Location-specific injected configs
+        {{range .InjectedConfigs}}
+        {{.}};
+        {{end}}
+
+        # Location-specific extras
+        {{range $key, $value := .Extras.ToMap}}
+        {{if eq $key "injected"}}
+        {{range $config := $value}}
+        {{$config}};
+        {{end}}
+        {{else if eq $key "security"}}
+        {{range $username, $password := $value}}
+        auth_basic_user_file {{$.BasicAuthFile}};
+        {{end}}
+        {{else}}
+        {{$key}} {{$value}};
+        {{end}}
+        {{end}}
+
+        {{if .BasicAuth}}
+        auth_basic "Basic Auth Enabled";
+        auth_basic_user_file {{.BasicAuthFile}};
+        {{end}}
+
+        # Proxy settings
+        {{if .UpstreamEnabled}}
+        proxy_pass {{.Scheme}}://{{.Upstream}}{{.ContainerPath}};
+        {{else}}
+        proxy_pass {{.Scheme}}://{{.ContainerAddress}}:{{.ContainerPort}}{{.ContainerPath}};
+        {{end}}
+
+        {{if ne .Path "/"}}
+        proxy_redirect $scheme://$http_host{{.ContainerPath}} $scheme://$http_host{{.Path}};
+        {{end}}
+
+        # WebSocket settings
+        {{if and .WebSocket .HTTP}}
+        proxy_set_header Host $http_host;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
+        proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
+        proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
+        {{else if .WebSocket}}
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        {{end}}
+    }
+    {{end}}
+    {{end}}
+}
+{{else}}
+server {
+    listen {{.Port}} {{if .IsDefaultServer}}default_server{{end}};
+    server_name {{.Hostname}};
+
+    {{if .IsRedirect}}
+    return 301 {{if .SSLEnabled}}https{{else}}http{{end}}://{{.RedirectHostname}}$request_uri;
+    {{else}}
+    # Global injected configs
+    {{range $key, $value := .Extras.ToMap}}
+    {{if eq $key "injected"}}
+    {{range $config := $value}}
+    {{$config}};
+    {{end}}
+    {{else if eq $key "security"}}
+    {{range $username, $password := $value}}
+    auth_basic_user_file {{$.BasicAuthFile}};
+    {{end}}
+    {{else}}
+    {{$key}} {{$value}};
+    {{end}}
+    {{end}}
+
+    {{range .Locations}}
+    location {{.Path}} {
+        # Location-specific injected configs
+        {{range .InjectedConfigs}}
+        {{.}};
+        {{end}}
+
+        # Location-specific extras
+        {{range $key, $value := .Extras.ToMap}}
+        {{if eq $key "injected"}}
+        {{range $config := $value}}
+        {{$config}};
+        {{end}}
+        {{else if eq $key "security"}}
+        {{range $username, $password := $value}}
+        auth_basic_user_file {{$.BasicAuthFile}};
+        {{end}}
+        {{else}}
+        {{$key}} {{$value}};
+        {{end}}
+        {{end}}
+
+        {{if .BasicAuth}}
+        auth_basic "Basic Auth Enabled";
+        auth_basic_user_file {{.BasicAuthFile}};
+        {{end}}
+
+        # Proxy settings
+        {{if .UpstreamEnabled}}
+        proxy_pass {{.Scheme}}://{{.Upstream}}{{.ContainerPath}};
+        {{else}}
+        proxy_pass {{.Scheme}}://{{.ContainerAddress}}:{{.ContainerPort}}{{.ContainerPath}};
+        {{end}}
+
+        {{if ne .Path "/"}}
+        proxy_redirect $scheme://$http_host{{.ContainerPath}} $scheme://$http_host{{.Path}};
+        {{end}}
+
+        # WebSocket settings
+        {{if and .WebSocket .HTTP}}
+        proxy_set_header Host $http_host;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
+        proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
+        proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
+        {{else if .WebSocket}}
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        {{end}}
+    }
+    {{end}}
+    {{end}}
+
+    location /.well-known/acme-challenge/ {
+        alias {{.Config.ChallengeDir}};
+        try_files $uri =404;
+    }
+}
+{{end}}
+
+{{if .SSLRedirect}}
+server {
+    listen 80 {{if .IsDefaultServer}}default_server{{end}};
+    server_name {{.Hostname}};
+    location /.well-known/acme-challenge/ {
+        alias {{.Config.ChallengeDir}};
+        try_files $uri =404;
+    }
+    location / {
+        {{if .IsRedirect}}
+        return 301 https://{{.RedirectHostname}}$request_uri;
+        {{else}}
+        return 301 https://$host$request_uri;
+        {{end}}
+    }
+}
+{{end}}
+{{end}}
+
+{{if .Config.DefaultServer}}
+server {
+    listen 80 default_server;
+    server_name _;
+    location /.well-known/acme-challenge/ {
+        alias {{.Config.ChallengeDir}};
+        try_files $uri =404;
+    }
+    location / {
+        return 503;
+    }
+}
+{{end}} 

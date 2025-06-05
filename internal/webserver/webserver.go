@@ -97,240 +97,19 @@ func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error)
 	return ws, nil
 }
 
-// loadTemplate loads the nginx configuration template
+// loadTemplate loads the nginx configuration template from file
 func (ws *WebServer) loadTemplate() (*nginx.Template, error) {
-	tmplStr := `map $http_upgrade $connection_upgrade {
-    default upgrade;
-    '' close;
-}
+	templatePath := "templates/nginx.conf.tmpl"
+	ws.log.Debug("Loading nginx template from: %s", templatePath)
 
-proxy_cache off;
-proxy_request_buffering off;
+	data, err := os.ReadFile(templatePath)
+	if err != nil {
+		return nil, errors.New(errors.ErrorTypeConfig, "failed to read template file", err).
+			WithContext("template_path", templatePath)
+	}
 
-{{range .Hosts}}
-{{range .Upstreams}}
-upstream {{ .ID }} {
-    {{range .Containers}}
-    server {{ .Address }}:{{ .Port }} max_fails=3 fail_timeout=30s;
-    {{end}}
-    keepalive 32;
-}
-{{end}}
-
-{{if .SSLEnabled}}
-server {
-    server_name {{ .Hostname }};
-    listen {{ .Port }} ssl http2 {{if .IsDefaultServer}}default_server{{end}};
-    ssl_certificate /etc/ssl/certs/{{ .SSLFile }}.crt;
-    ssl_certificate_key /etc/ssl/private/{{ .SSLFile }}.key;
-
-    {{if .IsRedirect}}
-    return 301 https://{{ .RedirectHostname }}$request_uri;
-    {{else if .IsDown}}
-    return 503;
-    {{else}}
-    {{if .BasicAuth}}
-    auth_basic "Basic Auth Enabled";
-    auth_basic_user_file {{ .BasicAuthFile }};
-    {{end}}
-
-    # Global injected configs
-    {{range $key, $value := .Extras.ToMap}}
-    {{if eq $key "injected"}}
-    {{range $config := $value}}
-    {{ $config }};
-    {{end}}
-    {{else if eq $key "security"}}
-    {{range $username, $password := $value}}
-    auth_basic_user_file {{ $.BasicAuthFile }};
-    {{end}}
-    {{else}}
-    {{ $key }} {{ $value }};
-    {{end}}
-    {{end}}
-
-    {{range .Locations}}
-    location {{ .Path }} {
-        # Location-specific injected configs
-        {{range .InjectedConfigs}}
-        {{ . }};
-        {{end}}
-
-        # Location-specific extras
-        {{range $key, $value := .Extras.ToMap}}
-        {{if eq $key "injected"}}
-        {{range $config := $value}}
-        {{ $config }};
-        {{end}}
-        {{else if eq $key "security"}}
-        {{range $username, $password := $value}}
-        auth_basic_user_file {{ $.BasicAuthFile }};
-        {{end}}
-        {{else}}
-        {{ $key }} {{ $value }};
-        {{end}}
-        {{end}}
-
-        {{if .BasicAuth}}
-        auth_basic "Basic Auth Enabled";
-        auth_basic_user_file {{ .BasicAuthFile }};
-        {{end}}
-
-        # Proxy settings
-        {{if .UpstreamEnabled}}
-        proxy_pass {{ .Scheme }}://{{ .Upstream }}{{ .ContainerPath }};
-        {{else}}
-        proxy_pass {{ .Scheme }}://{{ .ContainerAddress }}:{{ .ContainerPort }}{{ .ContainerPath }};
-        {{end}}
-
-        {{if ne .Path "/"}}
-        proxy_redirect $scheme://$http_host{{ .ContainerPath }} $scheme://$http_host{{ .Path }};
-        {{end}}
-
-        # WebSocket settings
-        {{if and .WebSocket .HTTP}}
-        proxy_set_header Host $http_host;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
-        proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
-        proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
-        {{else if .WebSocket}}
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
-        {{end}}
-    }
-    {{end}}
-    {{end}}
-}
-{{else}}
-server {
-    listen {{ .Port }} {{if .IsDefaultServer}}default_server{{end}};
-    server_name {{ .Hostname }};
-
-    {{if .IsRedirect}}
-    return 301 {{if .SSLEnabled}}https{{else}}http{{end}}://{{ .RedirectHostname }}$request_uri;
-    {{else}}
-    # Global injected configs
-    {{range $key, $value := .Extras.ToMap}}
-    {{if eq $key "injected"}}
-    {{range $config := $value}}
-    {{ $config }};
-    {{end}}
-    {{else if eq $key "security"}}
-    {{range $username, $password := $value}}
-    auth_basic_user_file {{ $.BasicAuthFile }};
-    {{end}}
-    {{else}}
-    {{ $key }} {{ $value }};
-    {{end}}
-    {{end}}
-
-    {{range .Locations}}
-    location {{ .Path }} {
-        # Location-specific injected configs
-        {{range .InjectedConfigs}}
-        {{ . }};
-        {{end}}
-
-        # Location-specific extras
-        {{range $key, $value := .Extras.ToMap}}
-        {{if eq $key "injected"}}
-        {{range $config := $value}}
-        {{ $config }};
-        {{end}}
-        {{else if eq $key "security"}}
-        {{range $username, $password := $value}}
-        auth_basic_user_file {{ $.BasicAuthFile }};
-        {{end}}
-        {{else}}
-        {{ $key }} {{ $value }};
-        {{end}}
-        {{end}}
-
-        {{if .BasicAuth}}
-        auth_basic "Basic Auth Enabled";
-        auth_basic_user_file {{ .BasicAuthFile }};
-        {{end}}
-
-        # Proxy settings
-        {{if .UpstreamEnabled}}
-        proxy_pass {{ .Scheme }}://{{ .Upstream }}{{ .ContainerPath }};
-        {{else}}
-        proxy_pass {{ .Scheme }}://{{ .ContainerAddress }}:{{ .ContainerPort }}{{ .ContainerPath }};
-        {{end}}
-
-        {{if ne .Path "/"}}
-        proxy_redirect $scheme://$http_host{{ .ContainerPath }} $scheme://$http_host{{ .Path }};
-        {{end}}
-
-        # WebSocket settings
-        {{if and .WebSocket .HTTP}}
-        proxy_set_header Host $http_host;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
-        proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
-        proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
-        {{else if .WebSocket}}
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
-        {{end}}
-    }
-    {{end}}
-    {{end}}
-
-    location /.well-known/acme-challenge/ {
-        alias {{ .Config.ChallengeDir }};
-        try_files $uri =404;
-    }
-}
-{{end}}
-
-{{if .SSLRedirect}}
-server {
-    listen 80 {{if .IsDefaultServer}}default_server{{end}};
-    server_name {{ .Hostname }};
-    location /.well-known/acme-challenge/ {
-        alias {{ .Config.ChallengeDir }};
-        try_files $uri =404;
-    }
-    location / {
-        {{if .IsRedirect}}
-        return 301 https://{{ .RedirectHostname }}$request_uri;
-        {{else}}
-        return 301 https://$host$request_uri;
-        {{end}}
-    }
-}
-{{end}}
-{{end}}
-
-{{if .Config.DefaultServer}}
-server {
-    listen 80 default_server;
-    server_name _;
-    location /.well-known/acme-challenge/ {
-        alias {{ .Config.ChallengeDir }};
-        try_files $uri =404;
-    }
-    location / {
-        return 503;
-    }
-}
-{{end}}`
-
-	return nginx.NewTemplate(tmplStr)
+	ws.log.Info("Successfully loaded nginx template (%d bytes)", len(data))
+	return nginx.NewTemplate(string(data))
 }
 
 // Start starts the web server and begins processing Docker events
@@ -505,9 +284,11 @@ func (ws *WebServer) handleNetworkCreate(event events.Message) error {
 // handleNetworkDestroy processes network destroy events
 func (ws *WebServer) handleNetworkDestroy(event events.Message) error {
 	networkID := event.Actor.ID
-	if _, exists := ws.networks[networkID]; exists {
+	if networkName, exists := ws.networks[networkID]; exists {
+		// Remove bidirectional mapping (network ID -> name and name -> ID)
 		delete(ws.networks, networkID)
-		delete(ws.networks, ws.networks[networkID])
+		delete(ws.networks, networkName)
+		ws.log.Info("Network destroyed: %s (%s)", networkName, networkID)
 		return ws.rescanAndReload()
 	}
 	return nil
@@ -617,12 +398,17 @@ func (ws *WebServer) updateContainer(containerID string) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
+	ws.log.Debug("Updating container configuration: %s", containerID)
+
 	// Get container info
 	container, err := ws.client.ContainerInspect(context.Background(), containerID)
 	if err != nil {
+		ws.log.Error("Failed to inspect container %s: %v", containerID, err)
 		return errors.New(errors.ErrorTypeDocker, "failed to inspect container", err).
 			WithContext("container_id", containerID)
 	}
+
+	ws.log.Debug("Container %s inspection successful, name: %s", containerID, container.Name)
 
 	// Get container environment variables
 	env := make(map[string]string)
@@ -640,6 +426,8 @@ func (ws *WebServer) updateContainer(containerID string) error {
 	}
 	hosts := processor.ProcessVirtualHosts(container, env, knownNetworks)
 	if len(hosts) > 0 {
+		ws.log.Info("Found %d virtual host(s) for container %s", len(hosts), containerID)
+
 		// Process basic auth
 		hostsByPort := make(map[string]map[int]*host.Host)
 		for hostname, h := range hosts {
@@ -647,6 +435,7 @@ func (ws *WebServer) updateContainer(containerID string) error {
 				hostsByPort[hostname] = make(map[int]*host.Host)
 			}
 			hostsByPort[hostname][h.Port] = h
+			ws.log.Debug("Configured virtual host: %s:%d for container %s", hostname, h.Port, containerID)
 		}
 		ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
 
@@ -656,7 +445,10 @@ func (ws *WebServer) updateContainer(containerID string) error {
 		}
 
 		// Reload nginx configuration
+		ws.log.Info("Reloading nginx configuration due to container %s update", containerID)
 		return ws.reload()
+	} else {
+		ws.log.Debug("No virtual hosts found for container %s", containerID)
 	}
 
 	return nil
@@ -664,31 +456,87 @@ func (ws *WebServer) updateContainer(containerID string) error {
 
 // removeContainer removes a container from the configuration
 func (ws *WebServer) removeContainer(containerID string) error {
-	// Remove container from all upstreams
-	for _, h := range ws.hosts {
-		for _, upstream := range h.Upstreams {
-			for i, c := range upstream.Containers {
-				if c.Address == containerID {
+	ws.log.Debug("Removing container: %s", containerID)
+
+	// Remove container from all upstreams and locations
+	removed := false
+	for hostname, h := range ws.hosts {
+		// Remove from upstreams
+		for i, upstream := range h.Upstreams {
+			for j, c := range upstream.Containers {
+				if c.ID == containerID { // Fixed: Compare container ID, not IP address
 					// Remove container from upstream
-					upstream.Containers = append(upstream.Containers[:i], upstream.Containers[i+1:]...)
-					break
+					upstream.Containers = append(upstream.Containers[:j], upstream.Containers[j+1:]...)
+					ws.log.Info("Removed container %s from upstream %s of host %s", containerID, upstream.ID, hostname)
+					removed = true
 				}
 			}
+
+			// Remove empty upstreams
+			if len(upstream.Containers) == 0 {
+				h.Upstreams = append(h.Upstreams[:i], h.Upstreams[i+1:]...)
+				ws.log.Info("Removed empty upstream %s from host %s", upstream.ID, hostname)
+			}
+		}
+
+		// Remove from locations
+		for path, location := range h.Locations {
+			if location.RemoveContainer(containerID) {
+				ws.log.Info("Removed container %s from location %s of host %s", containerID, path, hostname)
+				removed = true
+			}
+
+			// Remove empty locations
+			if location.IsEmpty() {
+				delete(h.Locations, path)
+				ws.log.Info("Removed empty location %s from host %s", path, hostname)
+			}
+		}
+
+		// Remove empty hosts
+		if len(h.Upstreams) == 0 && len(h.Locations) == 0 {
+			delete(ws.hosts, hostname)
+			ws.log.Info("Removed empty host %s", hostname)
 		}
 	}
-	return ws.reload()
+
+	// Remove from containers map
+	if _, exists := ws.containers[containerID]; exists {
+		delete(ws.containers, containerID)
+		ws.log.Debug("Removed container %s from containers map", containerID)
+	}
+
+	if removed {
+		return ws.reload()
+	}
+
+	return nil
 }
 
 // reload reloads the nginx configuration
 func (ws *WebServer) reload() error {
 	ws.log.Debug("Reloading nginx configuration...")
+	ws.log.Debug("Current hosts count: %d", len(ws.hosts))
+
+	// Log configured hosts for debugging
+	if len(ws.hosts) > 0 {
+		ws.log.Debug("Configured hosts:")
+		for hostname, h := range ws.hosts {
+			ws.log.Debug("  - %s:%d (SSL: %t, Locations: %d, Upstreams: %d)",
+				hostname, h.Port, h.SSLEnabled, len(h.Locations), len(h.Upstreams))
+		}
+	}
 
 	config, err := ws.template.Render(ws.hosts, ws.config)
 	if err != nil {
+		ws.log.Error("Failed to render nginx template: %v", err)
 		return errors.New(errors.ErrorTypeConfig, "failed to render template", err)
 	}
 
+	ws.log.Debug("Template rendered successfully, config length: %d bytes", len(config))
+
 	if err := ws.nginx.UpdateConfig(config); err != nil {
+		ws.log.Error("Failed to update nginx configuration: %v", err)
 		return errors.New(errors.ErrorTypeNginx, "failed to update nginx config", err)
 	}
 
