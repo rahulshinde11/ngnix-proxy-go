@@ -68,7 +68,7 @@ func (p *Processor) Stop() {
 }
 
 // processEvents processes incoming Docker events
-func (p *Processor) processEvents(events <-chan events.Message, errs <-chan error) {
+func (p *Processor) processEvents(eventChan <-chan events.Message, errs <-chan error) {
 	for {
 		select {
 		case err := <-errs:
@@ -77,10 +77,14 @@ func (p *Processor) processEvents(events <-chan events.Message, errs <-chan erro
 				p.errChan <- err
 				return
 			}
-		case event := <-events:
-			if err := p.handleEvent(event); err != nil {
-				log.Printf("Error handling event: %v", err)
-			}
+		case event := <-eventChan:
+			// Handle events asynchronously to prevent blocking the event stream
+			eventCopy := event
+			go func() {
+				if err := p.handleEvent(eventCopy); err != nil {
+					log.Printf("Error handling event: %v", err)
+				}
+			}()
 		case <-p.ctx.Done():
 			return
 		}
@@ -89,9 +93,7 @@ func (p *Processor) processEvents(events <-chan events.Message, errs <-chan erro
 
 // handleEvent routes events to appropriate handlers
 func (p *Processor) handleEvent(event events.Message) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	// No mutex lock here - let individual handlers manage their own concurrency
 	switch EventType(event.Type) {
 	case EventTypeContainer:
 		return p.handler.HandleContainerEvent(p.ctx, event)

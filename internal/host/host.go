@@ -114,6 +114,12 @@ func (h *Host) AddLocation(path string, container *Container, extras map[string]
 	// Add container
 	location.Containers[container.ID] = container
 
+	// Set primary container info for template (use first container or latest)
+	location.ContainerAddress = container.Address
+	location.ContainerPort = container.Port
+	location.ContainerPath = container.Path
+	location.Scheme = container.Scheme
+
 	// Update extras
 	if len(extras) > 0 {
 		location.Extras.Update(extras)
@@ -192,8 +198,20 @@ func (h *Host) AddInjectedConfig(path, config string) {
 	}
 }
 
-// ParseVirtualHost parses a VIRTUAL_HOST environment variable and extracts extras
-func ParseVirtualHost(virtualHost string) (hostname string, port int, path string, extras []string, err error) {
+// VirtualHostConfig represents parsed virtual host configuration
+type VirtualHostConfig struct {
+	Hostname        string
+	ServerPort      int
+	Scheme          string
+	Path            string
+	ContainerPort   int
+	ContainerScheme string
+	Extras          []string
+}
+
+// ParseVirtualHost parses a VIRTUAL_HOST environment variable
+// Format: [scheme://]hostname[:port][/path] -> [:port][/path]
+func ParseVirtualHost(virtualHost string) (*VirtualHostConfig, error) {
 	// Split extras (semicolon separated)
 	parts := strings.SplitN(virtualHost, ";", 2)
 	mainPart := parts[0]
@@ -207,45 +225,114 @@ func ParseVirtualHost(virtualHost string) (hostname string, port int, path strin
 		}
 	}
 
-	// Now parse the main part as before
+	// Split external and internal parts
 	mainParts := strings.Split(mainPart, "->")
 	if len(mainParts) > 2 {
-		return "", 0, "", nil, fmt.Errorf("invalid VIRTUAL_HOST format: %s", virtualHost)
+		return nil, fmt.Errorf("invalid VIRTUAL_HOST format: %s", virtualHost)
 	}
 
-	// Parse the hostname part
-	hostPart := strings.TrimSpace(mainParts[0])
+	externalPart := strings.TrimSpace(mainParts[0])
+	internalPart := ""
+	if len(mainParts) > 1 {
+		internalPart = strings.TrimSpace(mainParts[1])
+	}
+
+	// Parse external part (nginx server config)
+	scheme := "http" // default
+	hostPart := externalPart
+
+	// Extract scheme
 	if strings.HasPrefix(hostPart, "https://") {
+		scheme = "https"
 		hostPart = strings.TrimPrefix(hostPart, "https://")
 	} else if strings.HasPrefix(hostPart, "http://") {
+		scheme = "http"
 		hostPart = strings.TrimPrefix(hostPart, "http://")
 	} else if strings.HasPrefix(hostPart, "wss://") {
+		scheme = "wss"
 		hostPart = strings.TrimPrefix(hostPart, "wss://")
 	} else if strings.HasPrefix(hostPart, "ws://") {
+		scheme = "ws"
 		hostPart = strings.TrimPrefix(hostPart, "ws://")
 	}
 
-	// Split hostname and port
-	hostPort := strings.Split(hostPart, ":")
-	hostname = hostPort[0]
-	port = 80
+	// Parse hostname and server port from external part
+	hostAndPath := strings.Split(hostPart, "/")
+	hostPortPart := hostAndPath[0]
+	externalPath := "/"
+	if len(hostAndPath) > 1 {
+		externalPath = "/" + strings.Join(hostAndPath[1:], "/")
+	}
+
+	hostPort := strings.Split(hostPortPart, ":")
+	hostname := hostPort[0]
+	serverPort := 80
 	if len(hostPort) > 1 {
-		_, err := fmt.Sscanf(hostPort[1], "%d", &port)
+		_, err := fmt.Sscanf(hostPort[1], "%d", &serverPort)
 		if err != nil {
-			return "", 0, "", nil, fmt.Errorf("invalid port in VIRTUAL_HOST: %s", virtualHost)
+			return nil, fmt.Errorf("invalid server port in VIRTUAL_HOST: %s", virtualHost)
 		}
 	}
 
-	// Parse the path part if present
-	path = "/"
-	if len(mainParts) > 1 {
-		pathPart := strings.TrimSpace(mainParts[1])
-		if pathPart != "" {
-			path = pathPart
+	// Parse internal part (container config)
+	containerPort := 0        // Will be auto-detected if not specified
+	containerScheme := "http" // default
+	path := externalPath      // default to external path
+
+	if internalPart != "" {
+		// Check if it's a port specification (starts with :)
+		if strings.HasPrefix(internalPart, ":") {
+			// Format: :port
+			path = "/" // Reset to root when port is explicitly specified
+			if len(internalPart) > 1 {
+				_, err := fmt.Sscanf(internalPart[1:], "%d", &containerPort)
+				if err != nil {
+					return nil, fmt.Errorf("invalid container port in VIRTUAL_HOST: %s", virtualHost)
+				}
+			}
+		} else if strings.Contains(internalPart, "://") {
+			// Format: scheme://host:port/path or just /path
+			if strings.HasPrefix(internalPart, "https://") {
+				containerScheme = "https"
+				internalPart = strings.TrimPrefix(internalPart, "https://")
+			} else if strings.HasPrefix(internalPart, "http://") {
+				containerScheme = "http"
+				internalPart = strings.TrimPrefix(internalPart, "http://")
+			}
+			// Parse remaining part for port and path
+			if strings.Contains(internalPart, ":") {
+				hostPort := strings.Split(internalPart, ":")
+				if len(hostPort) == 2 {
+					portAndPath := strings.Split(hostPort[1], "/")
+					if portAndPath[0] != "" {
+						_, err := fmt.Sscanf(portAndPath[0], "%d", &containerPort)
+						if err != nil {
+							return nil, fmt.Errorf("invalid container port in VIRTUAL_HOST: %s", virtualHost)
+						}
+					}
+					if len(portAndPath) > 1 {
+						path = "/" + strings.Join(portAndPath[1:], "/")
+					}
+				}
+			} else if strings.HasPrefix(internalPart, "/") {
+				// Just a path
+				path = internalPart
+			}
+		} else if strings.HasPrefix(internalPart, "/") {
+			// Format: /path
+			path = internalPart
 		}
 	}
 
-	return hostname, port, path, extraLines, nil
+	return &VirtualHostConfig{
+		Hostname:        hostname,
+		ServerPort:      serverPort,
+		Scheme:          scheme,
+		Path:            path,
+		ContainerPort:   containerPort,
+		ContainerScheme: containerScheme,
+		Extras:          extraLines,
+	}, nil
 }
 
 // MergeExtras merges extras/injected configs from another host or location

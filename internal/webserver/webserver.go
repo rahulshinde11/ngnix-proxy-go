@@ -138,24 +138,35 @@ func (ws *WebServer) Start(ctx context.Context) error {
 
 // HandleContainerEvent implements event.EventHandler
 func (ws *WebServer) HandleContainerEvent(ctx context.Context, event events.Message) error {
+	ws.log.Debug("Handling container event - Action: %s, ID: %s, Actor.ID: %s", event.Action, event.ID, event.Actor.ID)
+
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
 	switch event.Action {
 	case "start":
+		ws.log.Info("Processing container start event for container %s", event.ID)
 		return ws.handleContainerStart(event)
 	case "die":
+		ws.log.Info("Processing container die event for container %s", event.Actor.ID)
 		return ws.handleContainerDie(event)
 	case "stop":
+		ws.log.Info("Processing container stop event for container %s", event.Actor.ID)
 		return ws.handleContainerStop(event)
 	case "kill":
+		ws.log.Info("Processing container kill event for container %s", event.Actor.ID)
 		return ws.handleContainerKill(event)
 	case "pause":
+		ws.log.Info("Processing container pause event for container %s", event.Actor.ID)
 		return ws.handleContainerPause(event)
 	case "unpause":
+		ws.log.Info("Processing container unpause event for container %s", event.Actor.ID)
 		return ws.handleContainerUnpause(event)
 	case "restart":
+		ws.log.Info("Processing container restart event for container %s", event.Actor.ID)
 		return ws.handleContainerRestart(event)
+	default:
+		ws.log.Debug("Unhandled container event action: %s for container %s", event.Action, event.ID)
 	}
 	return nil
 }
@@ -206,7 +217,7 @@ func (ws *WebServer) handleContainerStart(event events.Message) error {
 
 	ws.containers[event.ID] = container.NewContainer(containerInfo)
 	ws.log.Info("Container started: %s", event.ID)
-	return ws.rescanAndReload()
+	return ws.updateContainerLocked(event.ID)
 }
 
 // handleContainerDie processes container die events
@@ -260,7 +271,7 @@ func (ws *WebServer) handleNetworkConnect(event events.Message) error {
 		ws.log.Info("Connected to network: %s", network.Name)
 		return ws.rescanAndReload()
 	}
-	return ws.updateContainer(containerID)
+	return ws.updateContainerLocked(containerID)
 }
 
 // handleNetworkDisconnect processes network disconnect events
@@ -272,7 +283,7 @@ func (ws *WebServer) handleNetworkDisconnect(event events.Message) error {
 		delete(ws.networks, ws.networks[networkID])
 		return ws.rescanAndReload()
 	}
-	return ws.updateContainer(containerID)
+	return ws.updateContainerLocked(containerID)
 }
 
 // handleNetworkCreate processes network create events
@@ -367,10 +378,11 @@ func (ws *WebServer) rescanAllContainers() error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
-	// Clear existing containers
+	// Clear existing containers and hosts
 	ws.containers = make(map[string]*container.Container)
+	ws.hosts = make(map[string]*host.Host)
 
-	// Add all containers
+	// Add all containers and process their virtual hosts
 	for _, c := range containers {
 		containerInfo, err := ws.client.ContainerInspect(context.Background(), c.ID)
 		if err != nil {
@@ -379,6 +391,43 @@ func (ws *WebServer) rescanAllContainers() error {
 		}
 		ws.containers[c.ID] = container.NewContainer(containerInfo)
 		ws.log.Debug("Found container: %s", c.ID)
+
+		// Get container environment variables
+		env := make(map[string]string)
+		for _, e := range containerInfo.Config.Env {
+			parts := strings.SplitN(e, "=", 2)
+			if len(parts) == 2 {
+				env[parts[0]] = parts[1]
+			}
+		}
+
+		// Process virtual hosts
+		knownNetworks := make(map[string]string)
+		for id, name := range ws.networks {
+			knownNetworks[id] = name
+		}
+		hosts := processor.ProcessVirtualHosts(containerInfo, env, knownNetworks)
+		if len(hosts) > 0 {
+			ws.log.Info("Found %d virtual host(s) for container %s", len(hosts), c.ID)
+
+			// Process basic auth
+			hostsByPort := make(map[string]map[int]*host.Host)
+			for hostname, h := range hosts {
+				if _, ok := hostsByPort[hostname]; !ok {
+					hostsByPort[hostname] = make(map[int]*host.Host)
+				}
+				hostsByPort[hostname][h.Port] = h
+				ws.log.Debug("Configured virtual host: %s:%d for container %s", hostname, h.Port, c.ID)
+			}
+			ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
+
+			// Add hosts to the web server
+			for hostname, h := range hosts {
+				ws.hosts[hostname] = h
+			}
+		} else {
+			ws.log.Debug("No virtual hosts found for container %s", c.ID)
+		}
 	}
 
 	ws.log.Info("Container rescan completed: found %d containers", len(containers))
@@ -399,6 +448,64 @@ func (ws *WebServer) updateContainer(containerID string) error {
 	defer ws.mu.Unlock()
 
 	ws.log.Debug("Updating container configuration: %s", containerID)
+
+	// Get container info
+	container, err := ws.client.ContainerInspect(context.Background(), containerID)
+	if err != nil {
+		ws.log.Error("Failed to inspect container %s: %v", containerID, err)
+		return errors.New(errors.ErrorTypeDocker, "failed to inspect container", err).
+			WithContext("container_id", containerID)
+	}
+
+	ws.log.Debug("Container %s inspection successful, name: %s", containerID, container.Name)
+
+	// Get container environment variables
+	env := make(map[string]string)
+	for _, e := range container.Config.Env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			env[parts[0]] = parts[1]
+		}
+	}
+
+	// Process virtual hosts
+	knownNetworks := make(map[string]string)
+	for id, name := range ws.networks {
+		knownNetworks[id] = name
+	}
+	hosts := processor.ProcessVirtualHosts(container, env, knownNetworks)
+	if len(hosts) > 0 {
+		ws.log.Info("Found %d virtual host(s) for container %s", len(hosts), containerID)
+
+		// Process basic auth
+		hostsByPort := make(map[string]map[int]*host.Host)
+		for hostname, h := range hosts {
+			if _, ok := hostsByPort[hostname]; !ok {
+				hostsByPort[hostname] = make(map[int]*host.Host)
+			}
+			hostsByPort[hostname][h.Port] = h
+			ws.log.Debug("Configured virtual host: %s:%d for container %s", hostname, h.Port, containerID)
+		}
+		ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
+
+		// Add hosts to the web server
+		for hostname, h := range hosts {
+			ws.hosts[hostname] = h
+		}
+
+		// Reload nginx configuration
+		ws.log.Info("Reloading nginx configuration due to container %s update", containerID)
+		return ws.reload()
+	} else {
+		ws.log.Debug("No virtual hosts found for container %s", containerID)
+	}
+
+	return nil
+}
+
+// updateContainerLocked updates a container's configuration (assumes mutex is already held)
+func (ws *WebServer) updateContainerLocked(containerID string) error {
+	ws.log.Info("Updating container configuration (locked): %s", containerID)
 
 	// Get container info
 	container, err := ws.client.ContainerInspect(context.Background(), containerID)

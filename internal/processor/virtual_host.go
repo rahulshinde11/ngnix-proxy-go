@@ -68,24 +68,25 @@ func (p *VirtualHostProcessor) Process(cont types.Container) ([]*host.Host, erro
 
 	// Process each virtual host
 	for _, vh := range virtualHosts {
-		hostname, port, path, extras, err := host.ParseVirtualHost(vh)
+		config, err := host.ParseVirtualHost(vh)
 		if err != nil {
 			log.Printf("Error parsing virtual host %s: %v", vh, err)
 			continue
 		}
 
 		// Create host configuration
-		h := host.NewHost(hostname, port)
+		h := host.NewHost(config.Hostname, config.ServerPort)
 		h.IsStatic = strings.HasPrefix(vh, "STATIC_VIRTUAL_HOST")
+		h.Scheme = config.Scheme
 
-		// Set SSL if enabled
-		if info.Scheme == "https" {
-			h.SetSSL(true, fmt.Sprintf("/etc/nginx/certs/%s.crt", hostname))
+		// Set SSL if enabled (for https or wss schemes)
+		if config.Scheme == "https" || config.Scheme == "wss" {
+			h.SetSSL(true, fmt.Sprintf("/etc/nginx/certs/%s.crt", config.Hostname))
 		}
 
 		// Convert extras to map
 		extrasMap := make(map[string]string)
-		for _, extra := range extras {
+		for _, extra := range config.Extras {
 			parts := strings.SplitN(extra, "=", 2)
 			if len(parts) == 2 {
 				extrasMap[parts[0]] = parts[1]
@@ -100,21 +101,25 @@ func (p *VirtualHostProcessor) Process(cont types.Container) ([]*host.Host, erro
 			extrasMap["http"] = "true"
 		}
 		if _, ok := extrasMap["scheme"]; !ok {
-			extrasMap["scheme"] = info.Scheme
+			extrasMap["scheme"] = config.ContainerScheme
 		}
 		if _, ok := extrasMap["container_path"]; !ok {
-			extrasMap["container_path"] = "/"
+			extrasMap["container_path"] = config.Path
 		}
 
 		// Add location
+		containerPort := config.ContainerPort
+		if containerPort == 0 {
+			containerPort = info.Port // Use container's exposed port as fallback
+		}
 		container := &host.Container{
 			ID:      info.ID,
 			Address: info.IPAddress,
-			Port:    info.Port,
-			Scheme:  info.Scheme,
-			Path:    path,
+			Port:    containerPort,
+			Scheme:  config.ContainerScheme,
+			Path:    config.Path,
 		}
-		h.AddLocation(path, container, extrasMap)
+		h.AddLocation(config.Path, container, extrasMap)
 
 		// Add upstream
 		h.AddUpstream(info.ID, []*host.Container{container})
@@ -130,19 +135,25 @@ func (p *VirtualHostProcessor) ProcessStaticHosts(staticHosts []string) ([]*host
 	var hosts []*host.Host
 
 	for _, vh := range staticHosts {
-		hostname, port, path, extras, err := host.ParseVirtualHost(vh)
+		config, err := host.ParseVirtualHost(vh)
 		if err != nil {
 			log.Printf("Error parsing static virtual host %s: %v", vh, err)
 			continue
 		}
 
 		// Create host configuration
-		h := host.NewHost(hostname, port)
+		h := host.NewHost(config.Hostname, config.ServerPort)
 		h.IsStatic = true
+		h.Scheme = config.Scheme
+
+		// Set SSL if enabled (for https or wss schemes)
+		if config.Scheme == "https" || config.Scheme == "wss" {
+			h.SetSSL(true, fmt.Sprintf("/etc/nginx/certs/%s.crt", config.Hostname))
+		}
 
 		// Convert extras to map
 		extrasMap := make(map[string]string)
-		for _, extra := range extras {
+		for _, extra := range config.Extras {
 			parts := strings.SplitN(extra, "=", 2)
 			if len(parts) == 2 {
 				extrasMap[parts[0]] = parts[1]
@@ -155,9 +166,9 @@ func (p *VirtualHostProcessor) ProcessStaticHosts(staticHosts []string) ([]*host
 			Address: "",
 			Port:    0,
 			Scheme:  "",
-			Path:    path,
+			Path:    config.Path,
 		}
-		h.AddLocation(path, container, extrasMap)
+		h.AddLocation(config.Path, container, extrasMap)
 
 		hosts = append(hosts, h)
 	}
@@ -187,9 +198,11 @@ func ProcessVirtualHosts(container types.ContainerJSON, env map[string]string, k
 	// Get container IP address from known networks
 	var containerIP string
 	for _, network := range container.NetworkSettings.Networks {
-		if network.NetworkID != "" && network.NetworkID == knownNetworks[network.NetworkID] {
-			containerIP = network.IPAddress
-			break
+		if network.NetworkID != "" {
+			if _, exists := knownNetworks[network.NetworkID]; exists {
+				containerIP = network.IPAddress
+				break
+			}
 		}
 	}
 
@@ -295,19 +308,25 @@ func ProcessVirtualHosts(container types.ContainerJSON, env map[string]string, k
 
 // parseHostEntry parses a host entry and returns the host, location, container data, and extras
 func parseHostEntry(hostConfig string) (*host.Host, string, *host.Container, map[string]string) {
-	hostname, port, path, extras, err := host.ParseVirtualHost(hostConfig)
+	config, err := host.ParseVirtualHost(hostConfig)
 	if err != nil {
 		log.Printf("Error parsing virtual host %s: %v", hostConfig, err)
 		return nil, "", nil, nil
 	}
 
 	// Create host configuration
-	h := host.NewHost(hostname, port)
+	h := host.NewHost(config.Hostname, config.ServerPort)
 	h.IsStatic = strings.HasPrefix(hostConfig, "STATIC_VIRTUAL_HOST")
+	h.Scheme = config.Scheme
+
+	// Set SSL if enabled (for https or wss schemes)
+	if config.Scheme == "https" || config.Scheme == "wss" {
+		h.SetSSL(true, fmt.Sprintf("/etc/nginx/certs/%s.crt", config.Hostname))
+	}
 
 	// Convert extras to map
 	extrasMap := make(map[string]string)
-	for _, extra := range extras {
+	for _, extra := range config.Extras {
 		parts := strings.SplitN(extra, "=", 2)
 		if len(parts) == 2 {
 			extrasMap[parts[0]] = parts[1]
@@ -315,16 +334,16 @@ func parseHostEntry(hostConfig string) (*host.Host, string, *host.Container, map
 	}
 
 	// Add location
-	location := path
+	location := config.Path
 	if location == "" {
 		location = "/"
 	}
 
 	// Create container data
 	containerData := &host.Container{
-		Address: hostname,
-		Port:    port,
-		Scheme:  h.Scheme,
+		Address: config.Hostname,
+		Port:    config.ContainerPort,
+		Scheme:  config.ContainerScheme,
 		Path:    location,
 	}
 

@@ -193,7 +193,7 @@ server {
     {{end}}
 
     location /.well-known/acme-challenge/ {
-        alias {{.Config.ChallengeDir}};
+        alias {{$.Config.ChallengeDir}};
         try_files $uri =404;
     }
 }
@@ -204,7 +204,7 @@ server {
     listen 80 {{if .IsDefaultServer}}default_server{{end}};
     server_name {{.Hostname}};
     location /.well-known/acme-challenge/ {
-        alias {{.Config.ChallengeDir}};
+        alias {{$.Config.ChallengeDir}};
         try_files $uri =404;
     }
     location / {
@@ -223,7 +223,7 @@ server {
     listen 80 default_server;
     server_name _;
     location /.well-known/acme-challenge/ {
-        alias {{.Config.ChallengeDir}};
+        alias {{$.Config.ChallengeDir}};
         try_files $uri =404;
     }
     location / {

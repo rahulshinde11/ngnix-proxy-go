@@ -1,0 +1,102 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+nginx-proxy-go
+getssl
+*.test
+*.out
+
+# Go coverage files
+*.cover
+coverage.txt
+coverage.html
+
+# Go work and module files (when using workspaces)
+go.work
+go.work.sum
+
+# Vendor directory (if using vendor mode)
+vendor/
+
+# Build and temporary directories
+build/
+dist/
+tmp/
+temp/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories (uncomment if needed)
+# vendor/
+
+# Go workspace file
+go.work
+
+# Temporary directories
+tmp/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
+logs/
+
+# Docker related
+.dockerignore
+
+# SSL certificates and keys (for security)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Development and debug files
+debug
+debug.test
+__debug_bin*
+
+# Delve debugger
+.dlv/
+
+# Editor backup files
+*.bak
+*.orig
+
+# Project specific
+ssl/
+acme-challenges/
+nginx/conf.d/*.conf
+!nginx/conf.d/.gitkeep
+
+# Docker volumes data (if any local mounts)
+data/
+volumes/ 

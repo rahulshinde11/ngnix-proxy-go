@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  nginx-proxy-go:
+    build:
+      context: .
+      target: dev  # Use development stage
+    volumes:
+      # Bind mount source code for hot reloading
+      - .:/app/src:cached
+      # Keep these as named volumes for persistence
+      - /var/run/docker.sock:/var/run/docker.sock
+      - nginx-proxy-go-nginx:/etc/nginx
+      - nginx-proxy-go-ssl:/etc/ssl
+      - nginx-proxy-go-acme:/tmp/acme-challenges
+      # Cache Go modules and build cache
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    environment:
+      GO_DEBUG_ENABLE: 'true'
+      NGINX_CONF_DIR: /etc/nginx
+      CHALLENGE_DIR: /tmp/acme-challenges
+      SSL_DIR: /etc/ssl
+      HOSTNAME: nginx-proxy-go-dev
+    working_dir: /app/src
+
+volumes:
+  go-mod-cache:
+  go-build-cache: 

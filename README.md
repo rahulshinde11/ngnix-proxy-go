@@ -169,18 +169,123 @@ For HTTPS connections, consider setting up wildcard certificates to avoid SSL ce
 
 ## Development
 
-### Building from Source
+### Quick Start Development Setup
+
+The project includes an optimized development workflow using the `dev.sh` script that significantly reduces build times through Docker layer caching and bind mounts.
 
 ```bash
 # Clone the repository
 git clone https://github.com/rahulshinde/nginx-proxy-go.git
 cd nginx-proxy-go
 
+# Create the required network (if it doesn't exist)
+docker network create nginx-proxy
+
+# Start development environment (first time - downloads dependencies)
+./dev.sh start
+```
+
+> **Note:** The project includes a comprehensive `.gitignore` file that excludes binaries, build artifacts, SSL certificates, and other development files from version control.
+
+### Development Workflow Commands
+
+The `dev.sh` script provides optimized commands for different development scenarios:
+
+#### **For Active Development (Stay in Terminal):**
+```bash
+# Initial setup - builds everything, shows logs
+./dev.sh start
+
+# Quick restart without rebuild - for config changes
+./dev.sh quick  
+
+# Fast code rebuild - rebuilds only Go binaries (~5-10 seconds)
+./dev.sh rebuild-code
+```
+
+#### **Background Mode (Free Up Terminal):**
+```bash
+# Quick restart in background
+./dev.sh quick-bg
+
+# Fast code rebuild in background  
+./dev.sh rebuild-code-bg
+```
+
+#### **Utility Commands:**
+```bash
+# Follow container logs anytime
+./dev.sh logs
+
+# Open shell inside container for debugging
+./dev.sh shell
+
+# Full rebuild without cache (for major changes)
+./dev.sh rebuild
+
+# Clean up containers and volumes
+./dev.sh clean
+```
+
+### Typical Development Workflow
+
+1. **Initial Setup:**
+   ```bash
+   ./dev.sh start  # Watch it start up, downloads dependencies once
+   ```
+
+2. **Make Code Changes:**
+   - Edit your Go files
+   - Modify configurations
+   - Update templates
+
+3. **Test Changes (Super Fast):**
+   ```bash
+   ./dev.sh rebuild-code  # Rebuilds + shows logs immediately
+   ```
+
+4. **Iterate:** Repeat steps 2-3 for rapid development
+
+### Performance Optimizations
+
+The development setup includes several optimizations:
+
+- **Go Module Caching:** Dependencies are cached in Docker volumes and only downloaded once
+- **Build Cache:** Go build cache is persisted across container restarts
+- **Bind Mounts:** Source code is mounted directly, eliminating copy operations
+- **Multi-stage Build:** Development stage optimized for fast iteration
+- **Layer Caching:** Docker layers are efficiently cached to minimize rebuild time
+
+### Speed Comparison
+
+| Operation | Before | After |
+|-----------|--------|--------|
+| **Code Changes** | 2-3 minutes | 5-10 seconds |
+| **Dependency Changes** | 2-3 minutes | 30-60 seconds |
+| **Full Rebuild** | 3-4 minutes | 1-2 minutes |
+
+### Debugging
+
+The development container includes debugging support:
+
+- **Delve Debugger:** Port 2345 is exposed for remote debugging
+- **Debug Mode:** Set `GO_DEBUG_ENABLE=true` (default in dev mode)
+- **Live Logs:** Real-time container logs for immediate feedback
+
+### Traditional Building (Alternative)
+
+If you prefer the traditional approach:
+
+```bash
 # Build the container
-./build.sh
+docker build -t nginx-proxy-go .
 
 # Run in development mode
-./run-debug.sh
+docker run --rm -it \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v $(pwd):/app/src \
+  -p 80:80 -p 443:443 -p 2345:2345 \
+  nginx-proxy-go
 ```
 
 ### Project Structure
