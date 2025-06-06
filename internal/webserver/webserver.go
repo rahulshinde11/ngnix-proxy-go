@@ -644,38 +644,48 @@ func (ws *WebServer) reload() error {
 				ws.log.Debug("SSL enabled for %s: changed port to 443 and enabled SSL redirect", hostname)
 			}
 
-			// Check if certificate files exist
+			// Check for exact certificate files
 			certPath := filepath.Join("/etc/ssl/certs", hostname+".crt")
 			keyPath := filepath.Join("/etc/ssl/private", hostname+".key")
 
 			if _, err := os.Stat(certPath); err == nil {
 				if _, err := os.Stat(keyPath); err == nil {
-					// Both certificate and key files exist
 					h.SSLFile = hostname
 					ws.log.Debug("Found existing SSL certificate for %s", hostname)
-				} else {
-					ws.log.Warn("Certificate exists but key file missing for %s, disabling SSL", hostname)
-					h.SSLEnabled = false
-				}
-			} else {
-				// Check for self-signed certificate
-				selfSignedCertPath := filepath.Join("/etc/ssl/certs", hostname+".selfsigned.crt")
-				selfSignedKeyPath := filepath.Join("/etc/ssl/private", hostname+".selfsigned.key")
-
-				if _, err := os.Stat(selfSignedCertPath); err == nil {
-					if _, err := os.Stat(selfSignedKeyPath); err == nil {
-						// Self-signed certificate exists
-						h.SSLFile = hostname + ".selfsigned"
-						ws.log.Debug("Found existing self-signed SSL certificate for %s", hostname)
-					} else {
-						ws.log.Warn("Self-signed certificate exists but key file missing for %s, disabling SSL", hostname)
-						h.SSLEnabled = false
-					}
-				} else {
-					ws.log.Warn("No SSL certificate found for %s, disabling SSL", hostname)
-					h.SSLEnabled = false
+					continue
 				}
 			}
+
+			// Check for wildcard certificate files if exact not found
+			wildcardDomain := ""
+			parts := strings.Split(hostname, ".")
+			if len(parts) > 2 {
+				wildcardDomain = "*." + strings.Join(parts[1:], ".")
+				certPath = filepath.Join("/etc/ssl/certs", wildcardDomain+".crt")
+				keyPath = filepath.Join("/etc/ssl/private", wildcardDomain+".key")
+				if _, err := os.Stat(certPath); err == nil {
+					if _, err := os.Stat(keyPath); err == nil {
+						h.SSLFile = wildcardDomain
+						ws.log.Debug("Using wildcard SSL certificate %s for %s", wildcardDomain, hostname)
+						continue
+					}
+				}
+			}
+
+			// Check for self-signed certificate
+			selfSignedCertPath := filepath.Join("/etc/ssl/certs", hostname+".selfsigned.crt")
+			selfSignedKeyPath := filepath.Join("/etc/ssl/private", hostname+".selfsigned.key")
+
+			if _, err := os.Stat(selfSignedCertPath); err == nil {
+				if _, err := os.Stat(selfSignedKeyPath); err == nil {
+					h.SSLFile = hostname + ".selfsigned"
+					ws.log.Debug("Found existing self-signed SSL certificate for %s", hostname)
+					continue
+				}
+			}
+
+			ws.log.Warn("No SSL certificate found for %s, disabling SSL", hostname)
+			h.SSLEnabled = false
 		}
 	}
 
