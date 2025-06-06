@@ -1,7 +1,6 @@
 package nginx
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,11 +18,7 @@ type Nginx struct {
 
 // NginxConfig represents the configuration for nginx.
 type NginxConfig struct {
-	SSLConfig struct {
-		Ciphers string
-		// Add other SSL-related fields as needed
-	}
-	// Add other configuration fields as needed
+	ChallengeDir string
 }
 
 // NewNginx creates a new Nginx instance
@@ -115,93 +110,27 @@ func (n *Nginx) RenderTemplate(tmpl *template.Template, data interface{}) (strin
 
 // GenerateConfig generates the nginx configuration using a template.
 func (n *Nginx) GenerateConfig(config NginxConfig) error {
-	tmpl, err := template.New("nginx").Parse(`
-# WebSocket support
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    '' close;
-}
+	// Create directory if it doesn't exist
+	dir := filepath.Dir(n.confFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %v", err)
+	}
 
-# Proxy settings
-proxy_cache off;
-proxy_request_buffering off;
-proxy_http_version 1.1;
-proxy_buffering off;
-proxy_set_header Host $http_host;
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
-proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
-proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
-proxy_set_header Proxy "";
-
-# Forwarded headers mapping
-map $http_x_forwarded_proto $proxy_x_forwarded_proto {
-    default $http_x_forwarded_proto;
-    ''      $scheme;
-}
-
-map $http_x_forwarded_port $proxy_x_forwarded_port {
-    default $http_x_forwarded_port;
-    ''      $server_port;
-}
-
-map $scheme $proxy_x_forwarded_ssl {
-    default off;
-    https on;
-}
-
-# Server configuration
+	// Create a minimal default configuration
+	defaultConfig := fmt.Sprintf(`
 server {
-    listen 80;
-    listen [::]:80;
+    listen 80 default_server;
     server_name _;
-
-    # Redirect all HTTP traffic to HTTPS
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name _;
-
-    # SSL certificate configuration
-    ssl_certificate /etc/nginx/ssl/cert.pem;
-    ssl_certificate_key /etc/nginx/ssl/key.pem;
-
-    # Security headers
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header X-Content-Type-Options "nosniff" always;
-
-    # WebSocket support
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection $connection_upgrade;
-    proxy_read_timeout 1h;
-    proxy_send_timeout 1h;
-
-    # Default location
-    location / {
-        proxy_pass http://backend;
-    }
-
-    # ACME challenge location
     location /.well-known/acme-challenge/ {
-        alias {{ .Config.ChallengeDir }};
+        alias %s;
         try_files $uri =404;
     }
+    location / {
+        return 503;
+    }
 }
-`)
-	if err != nil {
-		return err
-	}
+`, config.ChallengeDir)
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, config); err != nil {
-		return err
-	}
-
-	// Write the generated configuration to a file
-	return os.WriteFile("/etc/nginx/conf.d/default.conf", buf.Bytes(), 0644)
+	// Write the configuration
+	return os.WriteFile(n.confFile, []byte(defaultConfig), 0644)
 }

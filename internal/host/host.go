@@ -129,6 +129,11 @@ func (h *Host) AddLocation(path string, container *Container, extras map[string]
 	if len(location.Containers) > 1 {
 		location.UpstreamEnabled = true
 	}
+
+	// Set WebSocket flag if scheme is ws or wss
+	if container.Scheme == "ws" || container.Scheme == "wss" {
+		location.WebSocket = true
+	}
 }
 
 // UpdateExtras updates the location's extras with new values

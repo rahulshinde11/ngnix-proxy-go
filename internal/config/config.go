@@ -16,18 +16,6 @@ type Config struct {
 	ClientMaxBodySize string
 	DefaultServer     bool
 
-	// SSL configuration
-	SSLEnabled             bool
-	SSLProtocols           []string
-	SSLCiphers             string
-	SSLPreferServerCiphers bool
-	SSLSessionTimeout      string
-	SSLSessionCache        string
-	SSLSessionTickets      bool
-	SSLStapling            bool
-	SSLStaplingVerify      bool
-	HSTSMaxAge             string
-
 	// Basic auth configuration
 	BasicAuthEnabled bool
 	BasicAuthFile    string
@@ -47,18 +35,6 @@ func NewConfig() *Config {
 		SSLDir:            getEnv("SSL_DIR", "./ssl"),
 		ClientMaxBodySize: getEnv("CLIENT_MAX_BODY_SIZE", "1m"),
 		DefaultServer:     getEnvBool("DEFAULT_HOST", true),
-
-		// SSL configuration
-		SSLEnabled:             true,
-		SSLProtocols:           []string{"TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"},
-		SSLCiphers:             getEnv("SSL_CIPHERS", "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:!DSS"),
-		SSLPreferServerCiphers: true,
-		SSLSessionTimeout:      "5m",
-		SSLSessionCache:        "shared:SSL:50m",
-		SSLSessionTickets:      false,
-		SSLStapling:            true,
-		SSLStaplingVerify:      true,
-		HSTSMaxAge:             "31536000",
 
 		// Basic auth configuration
 		BasicAuthEnabled: false,

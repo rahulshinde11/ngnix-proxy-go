@@ -980,17 +980,38 @@ func (ws *WebServer) getAllHosts() []*host.Host {
 	return allHosts
 }
 
-// getHostsForTemplate converts the new two-level map structure back to the old single-level map for template compatibility
+// getHostsForTemplate converts the two-level map structure to template data, intelligently consolidating
+// HTTP and HTTPS hosts for the same domain to prevent duplicate server blocks
 func (ws *WebServer) getHostsForTemplate() map[string]*host.Host {
 	result := make(map[string]*host.Host)
+
 	for hostname, portMap := range ws.hosts {
-		for port, h := range portMap {
-			// Always include port in key to ensure different hosts don't overwrite each other
-			// This is critical when we have both HTTP (port 80) and HTTPS (port 443) for same domain
-			key := fmt.Sprintf("%s:%d", hostname, port)
-			result[key] = h
+		var httpHost *host.Host
+		var httpsHost *host.Host
+
+		// Separate HTTP and HTTPS hosts
+		for _, h := range portMap {
+			if h.SSLEnabled {
+				httpsHost = h
+			} else {
+				httpHost = h
+			}
+		}
+
+		if httpsHost != nil {
+			// If we have HTTPS, use it as the primary host
+			// Enable SSL redirect if we also had an HTTP version
+			if httpHost != nil {
+				httpsHost.SSLRedirect = true
+				ws.log.Debug("Consolidated %s: Using HTTPS host with SSL redirect", hostname)
+			}
+			result[hostname] = httpsHost
+		} else if httpHost != nil {
+			// Only HTTP version exists, use it as-is
+			result[hostname] = httpHost
 		}
 	}
+
 	return result
 }
 

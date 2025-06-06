@@ -6,92 +6,50 @@ map $http_upgrade $connection_upgrade {
 proxy_cache off;
 proxy_request_buffering off;
 
-# Client configuration override
-client_max_body_size {{.Config.ClientMaxBodySize}};
+client_max_body_size {{ .Config.ClientMaxBodySize }};
 
-{{range .Hosts}}
-{{range .Upstreams}}
-upstream {{.ID}} {
-    {{range .Containers}}
-    server {{.Address}}:{{.Port}} max_fails=3 fail_timeout=30s;
-    {{end}}
-    keepalive 32;
+{{ range $hostname, $host := .Hosts }}
+{{ range $upstream := $host.Upstreams }}
+upstream {{ $upstream.ID }} {
+    {{ range $container := $upstream.Containers }}
+    server {{ $container.Address }}:{{ $container.Port }};
+    {{ end }}
 }
-{{end}}
+{{ end }}
 
-{{if .SSLEnabled}}
+{{ if $host.SSLEnabled }}
 server {
-    server_name {{.Hostname}};
-    listen {{.Port}} ssl {{if .IsDefaultServer}}default_server{{end}};
-    http2 on;
-    ssl_certificate /etc/ssl/certs/{{.SSLFile}}.crt;
-    ssl_certificate_key /etc/ssl/private/{{.SSLFile}}.key;
-
-    {{if .IsRedirect}}
-    return 301 https://{{.RedirectHostname}}$request_uri;
-    {{else if .IsDown}}
+    server_name {{ $host.Hostname }};
+    listen {{ $host.Port }} ssl http2 {{ if $host.IsDefaultServer }}default_server{{ end }};
+    ssl_certificate /etc/ssl/certs/{{ if eq $host.SSLFile "*" }}*.{{ $host.Hostname }}{{ else }}{{ $host.SSLFile }}{{ end }}.crt;
+    ssl_certificate_key /etc/ssl/private/{{ if eq $host.SSLFile "*" }}*.{{ $host.Hostname }}{{ else }}{{ $host.SSLFile }}{{ end }}.key;
+    {{ if $host.IsRedirect }}
+    return 301 https://{{ $host.RedirectHostname }}$request_uri;
+    {{ else if $host.IsDown }}
     return 503;
-    {{else}}
-    {{if .BasicAuth}}
+    {{ else }}
+    {{ if $host.BasicAuth }}
     auth_basic "Basic Auth Enabled";
-    auth_basic_user_file {{.BasicAuthFile}};
-    {{end}}
-
-    # Global injected configs
-    {{range $key, $value := .Extras.ToMap}}
-    {{if eq $key "injected"}}
-    {{range $config := $value}}
-    {{$config}};
-    {{end}}
-    {{else if eq $key "security"}}
-    {{range $username, $password := $value}}
-    auth_basic_user_file {{$.BasicAuthFile}};
-    {{end}}
-    {{else}}
-    {{$key}} {{$value}};
-    {{end}}
-    {{end}}
-
-    {{range .Locations}}
-    location {{.Path}} {
-        # Location-specific injected configs
-        {{range .InjectedConfigs}}
-        {{.}};
-        {{end}}
-
-        # Location-specific extras
-        {{range $key, $value := .Extras.ToMap}}
-        {{if eq $key "injected"}}
-        {{range $config := $value}}
-        {{$config}};
-        {{end}}
-        {{else if eq $key "security"}}
-        {{range $username, $password := $value}}
-        auth_basic_user_file {{$.BasicAuthFile}};
-        {{end}}
-        {{else}}
-        {{$key}} {{$value}};
-        {{end}}
-        {{end}}
-
-        {{if .BasicAuth}}
+    auth_basic_user_file {{ $host.BasicAuthFile }};
+    {{ end }}
+    {{ range $path, $location := $host.Locations }}
+    location {{ $path }} {
+        {{ range $config := $location.InjectedConfigs }}
+        {{ $config }};
+        {{ end }}
+        {{ if $location.BasicAuth }}
         auth_basic "Basic Auth Enabled";
-        auth_basic_user_file {{.BasicAuthFile}};
-        {{end}}
-
-        # Proxy settings
-        {{if .UpstreamEnabled}}
-        proxy_pass {{.Scheme}}://{{.Upstream}}{{.ContainerPath}};
-        {{else}}
-        proxy_pass {{.Scheme}}://{{.ContainerAddress}}:{{.ContainerPort}}{{.ContainerPath}};
-        {{end}}
-
-        {{if ne .Path "/"}}
-        proxy_redirect $scheme://$http_host{{.ContainerPath}} $scheme://$http_host{{.Path}};
-        {{end}}
-
-        # WebSocket settings
-        {{if and .WebSocket .HTTP}}
+        auth_basic_user_file {{ $location.BasicAuthFile }};
+        {{ end }}
+        {{ if $location.UpstreamEnabled }}
+        proxy_pass {{ $location.Scheme }}://{{ $location.Upstream }}{{ $location.ContainerPath }};
+        {{ else }}
+        proxy_pass {{ $location.Scheme }}://{{ $location.ContainerAddress }}:{{ $location.ContainerPort }}{{ $location.ContainerPath }};
+        {{ end }}
+        {{ if ne $path "/" }}
+        proxy_redirect $scheme://$http_host{{ if $location.ContainerPath }}{{ $location.ContainerPath }}{{ else }}/{{ end }} $scheme://$http_host{{ $path }};
+        {{ end }}
+        {{ if and $location.WebSocket $location.HTTP }}
         proxy_set_header Host $http_host;
         proxy_set_header Connection $connection_upgrade;
         proxy_set_header Upgrade $http_upgrade;
@@ -100,80 +58,38 @@ server {
         proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
         proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
         proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
-        {{else if .WebSocket}}
+        {{ else if $location.WebSocket }}
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "Upgrade";
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
-        {{end}}
+        {{ end }}
     }
-    {{end}}
-    {{end}}
+    {{ end }}
+    {{ end }}
 }
-{{else}}
+{{ else }}
 server {
-    listen {{.Port}} {{if .IsDefaultServer}}default_server{{end}};
-    server_name {{.Hostname}};
-
-    {{if .IsRedirect}}
-    return 301 {{if .SSLEnabled}}https{{else}}http{{end}}://{{.RedirectHostname}}$request_uri;
-    {{else}}
-    # Global injected configs
-    {{range $key, $value := .Extras.ToMap}}
-    {{if eq $key "injected"}}
-    {{range $config := $value}}
-    {{$config}};
-    {{end}}
-    {{else if eq $key "security"}}
-    {{range $username, $password := $value}}
-    auth_basic_user_file {{$.BasicAuthFile}};
-    {{end}}
-    {{else}}
-    {{$key}} {{$value}};
-    {{end}}
-    {{end}}
-
-    {{range .Locations}}
-    location {{.Path}} {
-        # Location-specific injected configs
-        {{range .InjectedConfigs}}
-        {{.}};
-        {{end}}
-
-        # Location-specific extras
-        {{range $key, $value := .Extras.ToMap}}
-        {{if eq $key "injected"}}
-        {{range $config := $value}}
-        {{$config}};
-        {{end}}
-        {{else if eq $key "security"}}
-        {{range $username, $password := $value}}
-        auth_basic_user_file {{$.BasicAuthFile}};
-        {{end}}
-        {{else}}
-        {{$key}} {{$value}};
-        {{end}}
-        {{end}}
-
-        {{if .BasicAuth}}
-        auth_basic "Basic Auth Enabled";
-        auth_basic_user_file {{.BasicAuthFile}};
-        {{end}}
-
-        # Proxy settings
-        {{if .UpstreamEnabled}}
-        proxy_pass {{.Scheme}}://{{.Upstream}}{{.ContainerPath}};
-        {{else}}
-        proxy_pass {{.Scheme}}://{{.ContainerAddress}}:{{.ContainerPort}}{{.ContainerPath}};
-        {{end}}
-
-        {{if ne .Path "/"}}
-        proxy_redirect $scheme://$http_host{{.ContainerPath}} $scheme://$http_host{{.Path}};
-        {{end}}
-
-        # WebSocket settings
-        {{if and .WebSocket .HTTP}}
+    listen {{ $host.Port }} {{ if $host.IsDefaultServer }}default_server{{ end }};
+    server_name {{ $host.Hostname }};
+    {{ if $host.IsRedirect }}
+    return 301 {{ if $host.SSLEnabled }}https{{ else }}http{{ end }}://{{ $host.RedirectHostname }}$request_uri;
+    {{ else }}
+    {{ range $path, $location := $host.Locations }}
+    location {{ $path }} {
+        {{ range $config := $location.InjectedConfigs }}
+        {{ $config }};
+        {{ end }}
+        {{ if $location.UpstreamEnabled }}
+        proxy_pass {{ $location.Scheme }}://{{ $location.Upstream }}{{ $location.ContainerPath }};
+        {{ else }}
+        proxy_pass {{ $location.Scheme }}://{{ $location.ContainerAddress }}:{{ $location.ContainerPort }}{{ $location.ContainerPath }};
+        {{ end }}
+        {{ if ne $path "/" }}
+        proxy_redirect $scheme://$http_host{{ if $location.ContainerPath }}{{ $location.ContainerPath }}{{ else }}/{{ end }} $scheme://$http_host{{ $path }};
+        {{ end }}
+        {{ if and $location.WebSocket $location.HTTP }}
         proxy_set_header Host $http_host;
         proxy_set_header Connection $connection_upgrade;
         proxy_set_header Upgrade $http_upgrade;
@@ -182,53 +98,51 @@ server {
         proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
         proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
         proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
-        {{else if .WebSocket}}
+        {{ else if $location.WebSocket }}
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
-        {{end}}
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        {{ end }}
     }
-    {{end}}
-    {{end}}
-
+    {{ end }}
     location /.well-known/acme-challenge/ {
-        alias {{$.Config.ChallengeDir}};
+        alias {{ $.Config.ChallengeDir }};
         try_files $uri =404;
     }
+    {{ end }}
 }
-{{end}}
-
-{{if .SSLRedirect}}
+{{ end }}
+{{ if $host.SSLRedirect }}
 server {
-    listen 80 {{if .IsDefaultServer}}default_server{{end}};
-    server_name {{.Hostname}};
+    listen 80 {{ if $host.IsDefaultServer }}default_server{{ end }};
+    server_name {{ $host.Hostname }};
     location /.well-known/acme-challenge/ {
-        alias {{$.Config.ChallengeDir}};
+        alias {{ $.Config.ChallengeDir }};
         try_files $uri =404;
     }
     location / {
-        {{if .IsRedirect}}
-        return 301 https://{{.RedirectHostname}}$request_uri;
-        {{else}}
+        {{ if $host.IsRedirect }}
+        return 301 https://{{ $host.RedirectHostname }}$request_uri;
+        {{ else }}
         return 301 https://$host$request_uri;
-        {{end}}
+        {{ end }}
     }
 }
-{{end}}
-{{end}}
+{{ end }}
+{{ end }}
 
-{{if .Config.DefaultServer}}
+{{ if .Config.DefaultServer }}
 server {
     listen 80 default_server;
     server_name _;
     location /.well-known/acme-challenge/ {
-        alias {{$.Config.ChallengeDir}};
+        alias {{ .Config.ChallengeDir }};
         try_files $uri =404;
     }
     location / {
         return 503;
     }
 }
-{{end}} 
+{{ end }} 
