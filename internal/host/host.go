@@ -406,11 +406,23 @@ func (l *Location) GetUpstreamID(hostname string, port int, index int) string {
 // RemoveContainer removes a container from all locations in the host
 func (h *Host) RemoveContainer(containerID string) bool {
 	removed := false
-	for _, location := range h.Locations {
+	locationsToDelete := make([]string, 0)
+
+	for path, location := range h.Locations {
 		if location.RemoveContainer(containerID) {
 			removed = true
+			// If location becomes empty, mark it for deletion (Python lines 72-75)
+			if location.IsEmpty() {
+				locationsToDelete = append(locationsToDelete, path)
+			}
 		}
 	}
+
+	// Remove empty locations (Python: del self.locations[path])
+	for _, path := range locationsToDelete {
+		delete(h.Locations, path)
+	}
+
 	return removed
 }
 

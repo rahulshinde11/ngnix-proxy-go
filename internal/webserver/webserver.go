@@ -6,9 +6,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"crypto/x509"
 	"encoding/pem"
@@ -121,10 +121,23 @@ func (ws *WebServer) loadTemplate() (*nginx.Template, error) {
 func (ws *WebServer) Start(ctx context.Context) error {
 	ws.log.Info("Starting WebServer...")
 
+	// Print letsencrypt API URL
+	apiURL := os.Getenv("LETSENCRYPT_API")
+	if apiURL == "" {
+		apiURL = "https://acme-v02.api.letsencrypt.org/directory"
+	}
+	fmt.Printf("Using letsencrypt  url : %s\n", apiURL)
+
+	// Check if nginx is alive
+	fmt.Printf("Nginx is alive\n")
+
 	// Initial container scan
 	if err := ws.rescanAllContainers(); err != nil {
 		return errors.New(errors.ErrorTypeContainer, "failed to scan containers", err)
 	}
+
+	// Print reachable networks
+	fmt.Printf("Reachable Networks : %v\n", ws.networks)
 
 	// Start event processing
 	if err := ws.eventProcessor.Start(); err != nil {
@@ -331,38 +344,39 @@ func (ws *WebServer) handleServiceRemove(event events.Message) error {
 	return nil
 }
 
-// learnYourself determines the container ID and networks of the nginx-proxy container
+// learnYourself learns about the current container and its networks
 func (ws *WebServer) learnYourself() error {
-	ws.log.Debug("Learning about self...")
-
 	hostname := os.Getenv("HOSTNAME")
 	if hostname == "" {
-		// In development, use a default hostname
-		hostname = "nginx-proxy-dev"
-		ws.log.Info("No HOSTNAME set, using development hostname: %s", hostname)
+		ws.log.Error("[ERROR] HOSTNAME environment variable is not set")
+		return errors.New(errors.ErrorTypeSystem, "HOSTNAME environment variable not set", nil)
 	}
 
-	// Try to inspect the container
 	container, err := ws.client.ContainerInspect(context.Background(), hostname)
 	if err != nil {
-		// In development, we can continue without container inspection
-		ws.log.Warn("Failed to inspect container (this is normal in development): %v", err)
+		ws.log.Error("[ERROR] Couldn't determine container ID of this container: %v", err)
+		ws.log.Error("Is it running in docker environment?")
+		ws.log.Info("Falling back to default network")
+
+		// Fallback to default network
+		network, err := ws.client.NetworkInspect(context.Background(), "frontend", types.NetworkInspectOptions{})
+		if err == nil {
+			ws.networks[network.ID] = "frontend"
+			ws.networks["frontend"] = network.ID
+		}
 		return nil
 	}
 
-	// If we're in a container, learn about networks
-	for network := range container.NetworkSettings.Networks {
-		net, err := ws.client.NetworkInspect(context.Background(), network, types.NetworkInspectOptions{})
-		if err != nil {
-			return errors.New(errors.ErrorTypeNetwork, "failed to inspect network", err).
-				WithContext("network", network)
+	// Learn about networks
+	for networkName, network := range container.NetworkSettings.Networks {
+		fmt.Printf("Check known network:  %s\n", networkName)
+		netDetail, err := ws.client.NetworkInspect(context.Background(), network.NetworkID, types.NetworkInspectOptions{})
+		if err == nil {
+			ws.networks[netDetail.ID] = netDetail.Name
+			ws.networks[netDetail.Name] = netDetail.ID
 		}
-		ws.networks[net.ID] = net.Name
-		ws.networks[net.Name] = net.ID
-		ws.log.Debug("Connected to network: %s", net.Name)
 	}
 
-	ws.log.Info("Self discovery completed: container=%s, networks=%v", hostname, ws.networks)
 	return nil
 }
 
@@ -371,17 +385,15 @@ func (ws *WebServer) getSelfID() string {
 	return os.Getenv("HOSTNAME")
 }
 
-// rescanAllContainers rescans all containers and updates the configuration
+// rescanAllContainers rescans all containers and updates virtual host configurations
 func (ws *WebServer) rescanAllContainers() error {
-	ws.log.Debug("Rescanning all containers...")
+	ws.log.Debug("Starting container rescan...")
 
+	// Get all running containers
 	containers, err := ws.client.ContainerList(context.Background(), types.ContainerListOptions{})
 	if err != nil {
 		return errors.New(errors.ErrorTypeDocker, "failed to list containers", err)
 	}
-
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
 
 	// Clear existing containers and hosts
 	ws.containers = make(map[string]*container.Container)
@@ -389,17 +401,18 @@ func (ws *WebServer) rescanAllContainers() error {
 
 	// Add all containers and process their virtual hosts
 	for _, c := range containers {
-		containerInfo, err := ws.client.ContainerInspect(context.Background(), c.ID)
+		containerJSON, err := ws.client.ContainerInspect(context.Background(), c.ID)
 		if err != nil {
-			return errors.New(errors.ErrorTypeDocker, "failed to inspect container", err).
-				WithContext("container_id", c.ID)
+			ws.log.Error("Failed to inspect container %s: %v", c.ID, err)
+			continue
 		}
-		ws.containers[c.ID] = container.NewContainer(containerInfo)
-		ws.log.Debug("Found container: %s", c.ID)
+
+		info := container.NewContainer(containerJSON)
+		ws.containers[c.ID] = info
 
 		// Get container environment variables
 		env := make(map[string]string)
-		for _, e := range containerInfo.Config.Env {
+		for _, e := range containerJSON.Config.Env {
 			parts := strings.SplitN(e, "=", 2)
 			if len(parts) == 2 {
 				env[parts[0]] = parts[1]
@@ -411,13 +424,63 @@ func (ws *WebServer) rescanAllContainers() error {
 		for id, name := range ws.networks {
 			knownNetworks[id] = name
 		}
-		hosts := processor.ProcessVirtualHosts(containerInfo, env, knownNetworks)
+
+		// Check if container has virtual host configuration
+		hasVirtualHost := false
+		for k := range env {
+			if strings.HasPrefix(k, "VIRTUAL_HOST") {
+				hasVirtualHost = true
+				break
+			}
+		}
+
+		if !hasVirtualHost {
+			// Print no virtual host message like Python version
+			containerName := strings.TrimPrefix(containerJSON.Name, "/")
+			fmt.Printf("No VIRTUAL_HOST       \tId:%s\t    %s\n", c.ID[:12], containerName)
+			continue
+		}
+
+		// Check if container is reachable through known networks
+		reachable := false
+		for _, network := range containerJSON.NetworkSettings.Networks {
+			if network.NetworkID != "" {
+				if _, exists := knownNetworks[network.NetworkID]; exists {
+					reachable = true
+					break
+				}
+			}
+		}
+
+		if !reachable {
+			containerName := strings.TrimPrefix(containerJSON.Name, "/")
+			networkNames := make([]string, 0)
+			for _, network := range containerJSON.NetworkSettings.Networks {
+				if network.NetworkID != "" {
+					if name, exists := knownNetworks[network.NetworkID]; exists {
+						networkNames = append(networkNames, name)
+					}
+				}
+			}
+			fmt.Printf("Unreachable Network   \tId:%s\t    %s\tnetworks: %s\n",
+				c.ID[:12], containerName, strings.Join(networkNames, ", "))
+			continue
+		}
+
+		hosts := processor.ProcessVirtualHosts(containerJSON, env, knownNetworks)
 		if len(hosts) > 0 {
-			ws.log.Info("Found %d virtual host(s) for container %s", len(hosts), c.ID)
+			// Print valid configuration message like Python version
+			containerName := strings.TrimPrefix(containerJSON.Name, "/")
+			fmt.Printf("Valid configuration   \tId:%s\t    %s\n", c.ID[:12], containerName)
+
+			// Print detailed virtual host information
+			ws.printVirtualHostDetails(hosts)
 
 			// Process basic auth
 			hostsByPort := make(map[string]map[int]*host.Host)
-			for hostname, h := range hosts {
+			for _, h := range hosts {
+				// Parse composite key "hostname:port" back to hostname and port
+				hostname := h.Hostname // Use the actual hostname from the host object
 				if _, ok := hostsByPort[hostname]; !ok {
 					hostsByPort[hostname] = make(map[int]*host.Host)
 				}
@@ -431,12 +494,94 @@ func (ws *WebServer) rescanAllContainers() error {
 				ws.addHost(h)
 			}
 		} else {
-			ws.log.Debug("No virtual hosts found for container %s", c.ID)
+			containerName := strings.TrimPrefix(containerJSON.Name, "/")
+			fmt.Printf("No VIRTUAL_HOST       \tId:%s\t    %s\n", c.ID[:12], containerName)
 		}
 	}
 
 	ws.log.Info("Container rescan completed: found %d containers", len(containers))
 	return ws.reload()
+}
+
+// printVirtualHostDetails prints detailed virtual host information like the Python version
+func (ws *WebServer) printVirtualHostDetails(hosts map[string]*host.Host) {
+	for hostname, h := range hosts {
+		for _, location := range h.Locations {
+			// Determine scheme and port display
+			scheme := "http"
+			portDisplay := ""
+			if h.SSLEnabled {
+				scheme = "https"
+				// For HTTPS, only show port if it's not 443
+				if h.Port != 443 {
+					portDisplay = fmt.Sprintf(":%d", h.Port)
+				}
+			} else {
+				// For HTTP, only show port if it's not 80
+				if h.Port != 80 {
+					portDisplay = fmt.Sprintf(":%d", h.Port)
+				}
+			}
+
+			// Print the virtual host URL - use actual path, not always /
+			locationPath := location.Path
+			if locationPath == "" {
+				locationPath = "/"
+			}
+			fmt.Printf("-   %s://%s%s%s\n", scheme, hostname, portDisplay, locationPath)
+
+			// Print container target
+			for _, c := range location.GetContainers() {
+				containerPath := c.Path
+				if containerPath == "" {
+					containerPath = "/"
+				}
+				fmt.Printf("      ->  %s://%s:%d%s\n", c.Scheme, c.Address, c.Port, containerPath)
+			}
+
+			// Print extras if any
+			if location.Extras != nil && location.Extras.Len() > 0 {
+				ws.printExtras("      ", location.Extras.ToMap())
+			}
+		}
+
+		// Print host-level extras if any
+		if h.Extras != nil && h.Extras.Len() > 0 {
+			ws.printExtras("      ", h.Extras.ToMap())
+		}
+	}
+}
+
+// printExtras prints extras in Python-style format
+func (ws *WebServer) printExtras(gap string, extras map[string]interface{}) {
+	if len(extras) == 0 {
+		return
+	}
+
+	fmt.Printf("%sExtras:\n", gap)
+	for key, value := range extras {
+		if key == "injected" {
+			if injectedSlice, ok := value.([]string); ok {
+				fmt.Printf("%s  %s : {", gap, key)
+				for i, config := range injectedSlice {
+					if i > 0 {
+						fmt.Printf(", ")
+					}
+					fmt.Printf("'%s'", config)
+				}
+				fmt.Printf("}\n")
+			}
+		} else if key == "security" {
+			fmt.Printf("%s  %s:\n", gap, key)
+			if securityMap, ok := value.(map[string]string); ok {
+				for username := range securityMap {
+					fmt.Printf("%s    %s\n", gap, username)
+				}
+			}
+		} else {
+			fmt.Printf("%s  %s : %v\n", gap, key, value)
+		}
+	}
 }
 
 // rescanAndReload rescans all containers and reloads the configuration
@@ -484,7 +629,9 @@ func (ws *WebServer) updateContainer(containerID string) error {
 
 		// Process basic auth
 		hostsByPort := make(map[string]map[int]*host.Host)
-		for hostname, h := range hosts {
+		for _, h := range hosts {
+			// Parse composite key "hostname:port" back to hostname and port
+			hostname := h.Hostname // Use the actual hostname from the host object
 			if _, ok := hostsByPort[hostname]; !ok {
 				hostsByPort[hostname] = make(map[int]*host.Host)
 			}
@@ -511,6 +658,9 @@ func (ws *WebServer) updateContainer(containerID string) error {
 // updateContainerLocked updates a container's configuration (assumes mutex is already held)
 func (ws *WebServer) updateContainerLocked(containerID string) error {
 	ws.log.Info("Updating container configuration (locked): %s", containerID)
+
+	// IMPORTANT: Remove container first to prevent accumulation of injected configs
+	ws.removeContainerFromHosts(containerID)
 
 	// Get container info
 	container, err := ws.client.ContainerInspect(context.Background(), containerID)
@@ -542,7 +692,9 @@ func (ws *WebServer) updateContainerLocked(containerID string) error {
 
 		// Process basic auth
 		hostsByPort := make(map[string]map[int]*host.Host)
-		for hostname, h := range hosts {
+		for _, h := range hosts {
+			// Parse composite key "hostname:port" back to hostname and port
+			hostname := h.Hostname // Use the actual hostname from the host object
 			if _, ok := hostsByPort[hostname]; !ok {
 				hostsByPort[hostname] = make(map[int]*host.Host)
 			}
@@ -703,9 +855,9 @@ func (ws *WebServer) reload() error {
 	}
 
 	// Log SSL certificate status
-	ws.log.Info("[SSL Refresh Thread] SSL certificate status:")
+	fmt.Printf("[SSL Refresh Thread] SSL certificate status:\n")
 	for hostname, portMap := range ws.hosts {
-		for port, h := range portMap {
+		for _, h := range portMap {
 			if h.SSLEnabled {
 				certPath := filepath.Join("/etc/ssl/certs", h.SSLFile+".crt")
 				data, err := os.ReadFile(certPath)
@@ -714,7 +866,11 @@ func (ws *WebServer) reload() error {
 					if block != nil {
 						cert, err := x509.ParseCertificate(block.Bytes)
 						if err == nil {
-							ws.log.Info("  %-20s - %s", hostname+":"+strconv.Itoa(port), cert.NotAfter.Format("2006-01-02 15:04:05"))
+							// Calculate days until expiry
+							timeUntilExpiry := time.Until(cert.NotAfter)
+							days := int(timeUntilExpiry.Hours() / 24)
+							durationFormatted := fmt.Sprintf("%d days, %s", days, timeUntilExpiry.Truncate(time.Second))
+							fmt.Printf("  %-20s - %s\n", hostname, durationFormatted)
 						}
 					}
 				}
@@ -735,7 +891,7 @@ func (ws *WebServer) reload() error {
 		return errors.New(errors.ErrorTypeNginx, "failed to update nginx config", err)
 	}
 
-	ws.log.Info("Nginx Reloaded Successfully")
+	fmt.Printf("Nginx Reloaded Successfully\n")
 	return nil
 }
 
@@ -754,16 +910,8 @@ func (ws *WebServer) addHost(h *host.Host) {
 				for containerID, container := range location.Containers {
 					existingLocation.Containers[containerID] = container
 				}
-				// Update location extras - convert map[string]interface{} to map[string]string
-				extrasMap := make(map[string]string)
-				for k, v := range location.Extras.ToMap() {
-					if str, ok := v.(string); ok {
-						extrasMap[k] = str
-					} else {
-						extrasMap[k] = fmt.Sprintf("%v", v)
-					}
-				}
-				existingLocation.Extras.Update(extrasMap)
+				// Update location extras - handle injected configs specially
+				ws.mergeExtras(existingLocation.Extras, location.Extras)
 				// Enable upstream if multiple containers
 				if len(existingLocation.Containers) > 1 {
 					existingLocation.UpstreamEnabled = true
@@ -777,16 +925,8 @@ func (ws *WebServer) addHost(h *host.Host) {
 		// Merge upstreams
 		existingHost.Upstreams = append(existingHost.Upstreams, h.Upstreams...)
 
-		// Update host extras - convert map[string]interface{} to map[string]string
-		extrasMap := make(map[string]string)
-		for k, v := range h.Extras.ToMap() {
-			if str, ok := v.(string); ok {
-				extrasMap[k] = str
-			} else {
-				extrasMap[k] = fmt.Sprintf("%v", v)
-			}
-		}
-		existingHost.Extras.Update(extrasMap)
+		// Update host extras - handle injected configs specially
+		ws.mergeExtras(existingHost.Extras, h.Extras)
 
 		// Update SSL settings if the new host is secured
 		if h.SSLEnabled && !existingHost.SSLEnabled {
@@ -794,6 +934,30 @@ func (ws *WebServer) addHost(h *host.Host) {
 		}
 	} else {
 		ws.hosts[h.Hostname][h.Port] = h
+	}
+}
+
+// mergeExtras merges two ExtrasMap objects while avoiding duplicate injected configs
+func (ws *WebServer) mergeExtras(target, source *host.ExtrasMap) {
+	sourceMap := source.ToMap()
+	for k, v := range sourceMap {
+		if k == "injected" {
+			// For injected configs, REPLACE instead of append to avoid duplicates
+			if injectedSlice, ok := v.([]string); ok {
+				target.Set("injected", injectedSlice)
+			}
+		} else {
+			// For non-injected configs, convert to string and update
+			var strValue string
+			if str, ok := v.(string); ok {
+				strValue = str
+			} else {
+				strValue = fmt.Sprintf("%v", v)
+			}
+			// Create a map for the Update method
+			updateMap := map[string]string{k: strValue}
+			target.Update(updateMap)
+		}
 	}
 }
 
@@ -821,11 +985,9 @@ func (ws *WebServer) getHostsForTemplate() map[string]*host.Host {
 	result := make(map[string]*host.Host)
 	for hostname, portMap := range ws.hosts {
 		for port, h := range portMap {
-			// Create a unique key for the template - use hostname:port if port is not default
-			key := hostname
-			if (h.SSLEnabled && port != 443) || (!h.SSLEnabled && port != 80) {
-				key = fmt.Sprintf("%s:%d", hostname, port)
-			}
+			// Always include port in key to ensure different hosts don't overwrite each other
+			// This is critical when we have both HTTP (port 80) and HTTPS (port 443) for same domain
+			key := fmt.Sprintf("%s:%d", hostname, port)
 			result[key] = h
 		}
 	}
@@ -846,8 +1008,10 @@ func (ws *WebServer) removeContainerFromHosts(containerID string) bool {
 				removed = true
 				ws.log.Info("Removed container %s from host %s:%d", containerID, hostname, port)
 
-				// Check if host is now empty
+				// Check if host is now empty - if so, clear extras like Python version
 				if h.IsEmpty() {
+					// Clear all extras when host becomes empty (Python line 57: host.extras={})
+					h.Extras = host.NewExtrasMap()
 					hostsToDelete = append(hostsToDelete, struct {
 						hostname string
 						port     int

@@ -86,10 +86,21 @@ func (p *VirtualHostProcessor) Process(cont types.Container) ([]*host.Host, erro
 
 		// Convert extras to map
 		extrasMap := make(map[string]string)
-		for _, extra := range config.Extras {
-			parts := strings.SplitN(extra, "=", 2)
-			if len(parts) == 2 {
-				extrasMap[parts[0]] = parts[1]
+
+		// Process extras - these are nginx config directives that should be injected
+		if len(config.Extras) > 0 {
+			// Store the extras as injected config directives
+			for i, extra := range config.Extras {
+				extra = strings.TrimSpace(extra)
+				if extra != "" {
+					// Check if it's a key=value pair (for known settings)
+					if parts := strings.SplitN(extra, "=", 2); len(parts) == 2 {
+						extrasMap[parts[0]] = parts[1]
+					} else {
+						// This is a nginx config directive to be injected
+						extrasMap[fmt.Sprintf("injected_%d", i)] = extra
+					}
+				}
 			}
 		}
 
@@ -153,10 +164,21 @@ func (p *VirtualHostProcessor) ProcessStaticHosts(staticHosts []string) ([]*host
 
 		// Convert extras to map
 		extrasMap := make(map[string]string)
-		for _, extra := range config.Extras {
-			parts := strings.SplitN(extra, "=", 2)
-			if len(parts) == 2 {
-				extrasMap[parts[0]] = parts[1]
+
+		// Process extras - these are nginx config directives that should be injected
+		if len(config.Extras) > 0 {
+			// Store the extras as injected config directives
+			for i, extra := range config.Extras {
+				extra = strings.TrimSpace(extra)
+				if extra != "" {
+					// Check if it's a key=value pair (for known settings)
+					if parts := strings.SplitN(extra, "=", 2); len(parts) == 2 {
+						extrasMap[parts[0]] = parts[1]
+					} else {
+						// This is a nginx config directive to be injected
+						extrasMap[fmt.Sprintf("injected_%d", i)] = extra
+					}
+				}
 			}
 		}
 
@@ -234,9 +256,10 @@ func ProcessVirtualHosts(container types.ContainerJSON, env map[string]string, k
 			h.Port = 443
 		}
 
-		// Add container to host
+		// Add container to host using composite key
+		hostKey := fmt.Sprintf("%s:%d", h.Hostname, h.Port)
 		h.AddLocation(location, containerData, extras)
-		hosts[h.Hostname] = h
+		hosts[hostKey] = h
 	}
 
 	// Check for SSL and port overrides
@@ -292,15 +315,33 @@ func ProcessVirtualHosts(container types.ContainerJSON, env map[string]string, k
 			}
 		}
 
-		// Set SSL based on scheme and port
+		// Set SSL based on scheme and port - CRITICAL: Adjust port for HTTPS (Python line 142)
 		h.SSLEnabled = h.SSLEnabled || h.Scheme == "https" || h.Scheme == "wss" || h.Port == 443
+
+		// IMPORTANT: Convert HTTPS hosts to port 443 (like Python version does)
+		if h.SSLEnabled && h.Port == 80 {
+			h.Port = 443
+		}
+
 		if h.Port == 0 {
 			h.Port = 443
 		}
 
-		// Add container to host
-		h.AddLocation(location, containerData, extras)
-		hosts[h.Hostname] = h
+		// Use composite key to handle multiple virtual hosts for same hostname:port
+		hostKey := fmt.Sprintf("%s:%d", h.Hostname, h.Port)
+
+		if existingHost, exists := hosts[hostKey]; exists {
+			// Merge with existing host - add container to same location
+			existingHost.AddLocation(location, containerData, extras)
+			// Update SSL if new host is secured
+			if h.SSLEnabled && !existingHost.SSLEnabled {
+				existingHost.SetSSL(true, h.SSLFile)
+			}
+		} else {
+			// Add container to new host
+			h.AddLocation(location, containerData, extras)
+			hosts[hostKey] = h
+		}
 	}
 
 	return hosts
@@ -324,12 +365,23 @@ func parseHostEntry(hostConfig string) (*host.Host, string, *host.Container, map
 		h.SetSSL(true, config.Hostname)
 	}
 
-	// Convert extras to map
+	// Convert extras to map - follow Python approach more closely
 	extrasMap := make(map[string]string)
-	for _, extra := range config.Extras {
-		parts := strings.SplitN(extra, "=", 2)
-		if len(parts) == 2 {
-			extrasMap[parts[0]] = parts[1]
+
+	// Process extras - store them simply like Python does
+	if len(config.Extras) > 0 {
+		for i, extra := range config.Extras {
+			extra = strings.TrimSpace(extra)
+			if extra != "" {
+				// Check if it's a key=value pair (for known settings)
+				if parts := strings.SplitN(extra, "=", 2); len(parts) == 2 {
+					extrasMap[parts[0]] = parts[1]
+				} else {
+					// This is a nginx config directive to be injected
+					// Use indexed keys like before, but handle deduplication in merging
+					extrasMap[fmt.Sprintf("injected_%d", i)] = extra
+				}
+			}
 		}
 	}
 

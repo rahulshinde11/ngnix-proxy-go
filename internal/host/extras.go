@@ -83,15 +83,31 @@ func (e *ExtrasMap) Update(extras map[string]string) {
 		case "container_path":
 			e.values[k] = NewExtrasValue(v)
 		default:
-			// For injected configs, store as array
+			// For injected configs, collect them into a deduplicated slice
 			if strings.HasPrefix(k, "injected_") {
-				if injected, ok := e.values["injected"]; ok {
-					if injectedSlice, ok := injected.Get().([]string); ok {
-						e.values["injected"] = NewExtrasValue(append(injectedSlice, v))
+				// Get existing injected configs as a slice
+				var existingInjected []string
+				if existing := e.Get("injected"); existing != nil {
+					if slice, ok := existing.([]string); ok {
+						existingInjected = slice
 					}
-				} else {
-					e.values["injected"] = NewExtrasValue([]string{v})
 				}
+
+				// Check if this config already exists (deduplicate like Python set)
+				found := false
+				for _, existing := range existingInjected {
+					if existing == v {
+						found = true
+						break
+					}
+				}
+
+				// Only add if not found (mimic Python set behavior)
+				if !found {
+					existingInjected = append(existingInjected, v)
+				}
+
+				e.values["injected"] = NewExtrasValue(existingInjected)
 			} else {
 				e.values[k] = NewExtrasValue(v)
 			}
