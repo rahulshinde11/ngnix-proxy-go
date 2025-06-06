@@ -2,9 +2,11 @@ package webserver
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -31,7 +33,7 @@ type WebServer struct {
 	client                 *client.Client
 	config                 *config.Config
 	nginx                  *nginx.Nginx
-	hosts                  map[string]*host.Host
+	hosts                  map[string]map[int]*host.Host
 	containers             map[string]*container.Container
 	networks               map[string]string
 	mu                     sync.RWMutex
@@ -67,7 +69,7 @@ func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error)
 	ws := &WebServer{
 		client:                 client,
 		config:                 cfg,
-		hosts:                  make(map[string]*host.Host),
+		hosts:                  make(map[string]map[int]*host.Host),
 		containers:             make(map[string]*container.Container),
 		networks:               make(map[string]string),
 		basicAuthProcessor:     processor.NewBasicAuthProcessor(filepath.Join(cfg.ConfDir, "basic_auth")),
@@ -84,7 +86,7 @@ func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error)
 	// Load template
 	tmpl, err := ws.loadTemplate()
 	if err != nil {
-		return nil, errors.New(errors.ErrorTypeConfig, "failed to load template", err)
+		return nil, err
 	}
 	ws.template = tmpl
 
@@ -383,7 +385,7 @@ func (ws *WebServer) rescanAllContainers() error {
 
 	// Clear existing containers and hosts
 	ws.containers = make(map[string]*container.Container)
-	ws.hosts = make(map[string]*host.Host)
+	ws.hosts = make(map[string]map[int]*host.Host)
 
 	// Add all containers and process their virtual hosts
 	for _, c := range containers {
@@ -425,8 +427,8 @@ func (ws *WebServer) rescanAllContainers() error {
 			ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
 
 			// Add hosts to the web server
-			for hostname, h := range hosts {
-				ws.hosts[hostname] = h
+			for _, h := range hosts {
+				ws.addHost(h)
 			}
 		} else {
 			ws.log.Debug("No virtual hosts found for container %s", c.ID)
@@ -492,8 +494,8 @@ func (ws *WebServer) updateContainer(containerID string) error {
 		ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
 
 		// Add hosts to the web server
-		for hostname, h := range hosts {
-			ws.hosts[hostname] = h
+		for _, h := range hosts {
+			ws.addHost(h)
 		}
 
 		// Reload nginx configuration
@@ -550,8 +552,8 @@ func (ws *WebServer) updateContainerLocked(containerID string) error {
 		ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
 
 		// Add hosts to the web server
-		for hostname, h := range hosts {
-			ws.hosts[hostname] = h
+		for _, h := range hosts {
+			ws.addHost(h)
 		}
 
 		// Reload nginx configuration
@@ -569,46 +571,7 @@ func (ws *WebServer) removeContainer(containerID string) error {
 	ws.log.Debug("Removing container: %s", containerID)
 
 	// Remove container from all upstreams and locations
-	removed := false
-	for hostname, h := range ws.hosts {
-		// Remove from upstreams
-		for i, upstream := range h.Upstreams {
-			for j, c := range upstream.Containers {
-				if c.ID == containerID { // Fixed: Compare container ID, not IP address
-					// Remove container from upstream
-					upstream.Containers = append(upstream.Containers[:j], upstream.Containers[j+1:]...)
-					ws.log.Info("Removed container %s from upstream %s of host %s", containerID, upstream.ID, hostname)
-					removed = true
-				}
-			}
-
-			// Remove empty upstreams
-			if len(upstream.Containers) == 0 {
-				h.Upstreams = append(h.Upstreams[:i], h.Upstreams[i+1:]...)
-				ws.log.Info("Removed empty upstream %s from host %s", upstream.ID, hostname)
-			}
-		}
-
-		// Remove from locations
-		for path, location := range h.Locations {
-			if location.RemoveContainer(containerID) {
-				ws.log.Info("Removed container %s from location %s of host %s", containerID, path, hostname)
-				removed = true
-			}
-
-			// Remove empty locations
-			if location.IsEmpty() {
-				delete(h.Locations, path)
-				ws.log.Info("Removed empty location %s from host %s", path, hostname)
-			}
-		}
-
-		// Remove empty hosts
-		if len(h.Upstreams) == 0 && len(h.Locations) == 0 {
-			delete(ws.hosts, hostname)
-			ws.log.Info("Removed empty host %s", hostname)
-		}
-	}
+	removed := ws.removeContainerFromHosts(containerID)
 
 	// Remove from containers map
 	if _, exists := ws.containers[containerID]; exists {
@@ -631,64 +594,68 @@ func (ws *WebServer) reload() error {
 	// Log configured hosts for debugging
 	if len(ws.hosts) > 0 {
 		ws.log.Debug("Configured hosts:")
-		for hostname, h := range ws.hosts {
-			ws.log.Debug("  - %s:%d (SSL: %t, Locations: %d, Upstreams: %d)",
-				hostname, h.Port, h.SSLEnabled, len(h.Locations), len(h.Upstreams))
+		for hostname, portMap := range ws.hosts {
+			for port, h := range portMap {
+				ws.log.Debug("  - %s:%d (SSL: %t, Locations: %d, Upstreams: %d)",
+					hostname, port, h.SSLEnabled, len(h.Locations), len(h.Upstreams))
+			}
 		}
 	}
 
 	// Process SSL certificates for hosts that require them
-	for hostname, h := range ws.hosts {
-		if h.SSLEnabled {
-			// Adjust port for SSL - if port is 80 or 443, set to 443 and enable SSL redirect
-			if h.Port == 80 || h.Port == 443 {
-				h.Port = 443
-				h.SSLRedirect = true
-				ws.log.Debug("SSL enabled for %s: changed port to 443 and enabled SSL redirect", hostname)
-			}
-
-			// Check for exact certificate files
-			certPath := filepath.Join("/etc/ssl/certs", hostname+".crt")
-			keyPath := filepath.Join("/etc/ssl/private", hostname+".key")
-
-			if _, err := os.Stat(certPath); err == nil {
-				if _, err := os.Stat(keyPath); err == nil {
-					h.SSLFile = hostname
-					ws.log.Debug("Found existing SSL certificate for %s", hostname)
-					continue
+	for hostname, portMap := range ws.hosts {
+		for port, h := range portMap {
+			if h.SSLEnabled {
+				// Adjust port for SSL - if port is 80 or 443, set to 443 and enable SSL redirect
+				if port == 80 || port == 443 {
+					h.Port = 443
+					h.SSLRedirect = true
+					ws.log.Debug("SSL enabled for %s: changed port to 443 and enabled SSL redirect", hostname)
 				}
-			}
 
-			// Check for wildcard certificate files if exact not found
-			wildcardDomain := ""
-			parts := strings.Split(hostname, ".")
-			if len(parts) > 2 {
-				wildcardDomain = "*." + strings.Join(parts[1:], ".")
-				certPath = filepath.Join("/etc/ssl/certs", wildcardDomain+".crt")
-				keyPath = filepath.Join("/etc/ssl/private", wildcardDomain+".key")
+				// Check for exact certificate files
+				certPath := filepath.Join("/etc/ssl/certs", hostname+".crt")
+				keyPath := filepath.Join("/etc/ssl/private", hostname+".key")
+
 				if _, err := os.Stat(certPath); err == nil {
 					if _, err := os.Stat(keyPath); err == nil {
-						h.SSLFile = wildcardDomain
-						ws.log.Debug("Using wildcard SSL certificate %s for %s", wildcardDomain, hostname)
+						h.SSLFile = hostname
+						ws.log.Debug("Found existing SSL certificate for %s", hostname)
 						continue
 					}
 				}
-			}
 
-			// Check for self-signed certificate
-			selfSignedCertPath := filepath.Join("/etc/ssl/certs", hostname+".selfsigned.crt")
-			selfSignedKeyPath := filepath.Join("/etc/ssl/private", hostname+".selfsigned.key")
-
-			if _, err := os.Stat(selfSignedCertPath); err == nil {
-				if _, err := os.Stat(selfSignedKeyPath); err == nil {
-					h.SSLFile = hostname + ".selfsigned"
-					ws.log.Debug("Found existing self-signed SSL certificate for %s", hostname)
-					continue
+				// Check for wildcard certificate files if exact not found
+				wildcardDomain := ""
+				parts := strings.Split(hostname, ".")
+				if len(parts) > 2 {
+					wildcardDomain = "*." + strings.Join(parts[1:], ".")
+					certPath = filepath.Join("/etc/ssl/certs", wildcardDomain+".crt")
+					keyPath = filepath.Join("/etc/ssl/private", wildcardDomain+".key")
+					if _, err := os.Stat(certPath); err == nil {
+						if _, err := os.Stat(keyPath); err == nil {
+							h.SSLFile = wildcardDomain
+							ws.log.Debug("Using wildcard SSL certificate %s for %s", wildcardDomain, hostname)
+							continue
+						}
+					}
 				}
-			}
 
-			ws.log.Warn("No SSL certificate found for %s, disabling SSL", hostname)
-			h.SSLEnabled = false
+				// Check for self-signed certificate
+				selfSignedCertPath := filepath.Join("/etc/ssl/certs", hostname+".selfsigned.crt")
+				selfSignedKeyPath := filepath.Join("/etc/ssl/private", hostname+".selfsigned.key")
+
+				if _, err := os.Stat(selfSignedCertPath); err == nil {
+					if _, err := os.Stat(selfSignedKeyPath); err == nil {
+						h.SSLFile = hostname + ".selfsigned"
+						ws.log.Debug("Found existing self-signed SSL certificate for %s", hostname)
+						continue
+					}
+				}
+
+				ws.log.Warn("No SSL certificate found for %s, disabling SSL", hostname)
+				h.SSLEnabled = false
+			}
 		}
 	}
 
@@ -697,30 +664,32 @@ func (ws *WebServer) reload() error {
 		ws.log.Info("Valid configuration      Id:%s     %s", containerID, container.Name)
 
 		// Log virtual hosts for this container
-		for hostname, h := range ws.hosts {
-			for _, location := range h.Locations {
-				for _, c := range location.GetContainers() {
-					if c.ID == containerID {
-						ws.log.Info("-   %s://%s:%d/",
-							map[bool]string{true: "https", false: "http"}[h.SSLEnabled],
-							hostname, h.Port)
+		for hostname, portMap := range ws.hosts {
+			for port, h := range portMap {
+				for _, location := range h.Locations {
+					for _, c := range location.GetContainers() {
+						if c.ID == containerID {
+							ws.log.Info("-   %s://%s:%d/",
+								map[bool]string{true: "https", false: "http"}[h.SSLEnabled],
+								hostname, port)
 
-						// Log target URL
-						ws.log.Info("       ->  http://%s:%d", c.Address, c.Port)
+							// Log target URL
+							ws.log.Info("       ->  http://%s:%d", c.Address, c.Port)
 
-						// Log extras
-						if location.Extras != nil {
-							extras := location.Extras.ToMap()
-							if len(extras) > 0 {
-								ws.log.Info("       Extras:")
-								for key, value := range extras {
-									if key == "injected" {
-										ws.log.Info("         injected : %v", value)
-									} else if key == "security" {
-										ws.log.Info("         security:")
-										if securityMap, ok := value.(map[string]string); ok {
-											for username := range securityMap {
-												ws.log.Info("           %s", username)
+							// Log extras
+							if location.Extras != nil {
+								extras := location.Extras.ToMap()
+								if len(extras) > 0 {
+									ws.log.Info("       Extras:")
+									for key, value := range extras {
+										if key == "injected" {
+											ws.log.Info("         injected : %v", value)
+										} else if key == "security" {
+											ws.log.Info("         security:")
+											if securityMap, ok := value.(map[string]string); ok {
+												for username := range securityMap {
+													ws.log.Info("           %s", username)
+												}
 											}
 										}
 									}
@@ -735,26 +704,28 @@ func (ws *WebServer) reload() error {
 
 	// Log SSL certificate status
 	ws.log.Info("[SSL Refresh Thread] SSL certificate status:")
-	for hostname, h := range ws.hosts {
-		if h.SSLEnabled {
-			certPath := filepath.Join("/etc/ssl/certs", h.SSLFile+".crt")
-			data, err := os.ReadFile(certPath)
-			if err == nil {
-				block, _ := pem.Decode(data)
-				if block != nil {
-					cert, err := x509.ParseCertificate(block.Bytes)
-					if err == nil {
-						ws.log.Info("  %-20s - %s", hostname, cert.NotAfter.Format("2006-01-02 15:04:05"))
+	for hostname, portMap := range ws.hosts {
+		for port, h := range portMap {
+			if h.SSLEnabled {
+				certPath := filepath.Join("/etc/ssl/certs", h.SSLFile+".crt")
+				data, err := os.ReadFile(certPath)
+				if err == nil {
+					block, _ := pem.Decode(data)
+					if block != nil {
+						cert, err := x509.ParseCertificate(block.Bytes)
+						if err == nil {
+							ws.log.Info("  %-20s - %s", hostname+":"+strconv.Itoa(port), cert.NotAfter.Format("2006-01-02 15:04:05"))
+						}
 					}
 				}
 			}
 		}
 	}
 
-	config, err := ws.template.Render(ws.hosts, ws.config)
+	config, err := ws.template.Render(ws.getHostsForTemplate(), ws.config)
 	if err != nil {
 		ws.log.Error("Failed to render nginx template: %v", err)
-		return errors.New(errors.ErrorTypeConfig, "failed to render template", err)
+		return errors.New(errors.ErrorTypeConfig, "failed to render nginx template", err)
 	}
 
 	ws.log.Debug("Template rendered successfully, config length: %d bytes", len(config))
@@ -766,4 +737,137 @@ func (ws *WebServer) reload() error {
 
 	ws.log.Info("Nginx Reloaded Successfully")
 	return nil
+}
+
+// addHost adds a host to the hosts map, merging with existing hosts if necessary
+func (ws *WebServer) addHost(h *host.Host) {
+	if ws.hosts[h.Hostname] == nil {
+		ws.hosts[h.Hostname] = make(map[int]*host.Host)
+	}
+
+	existingHost := ws.hosts[h.Hostname][h.Port]
+	if existingHost != nil {
+		// Merge locations from the new host into the existing host
+		for path, location := range h.Locations {
+			if existingLocation, exists := existingHost.Locations[path]; exists {
+				// Merge containers from the new location into the existing location
+				for containerID, container := range location.Containers {
+					existingLocation.Containers[containerID] = container
+				}
+				// Update location extras - convert map[string]interface{} to map[string]string
+				extrasMap := make(map[string]string)
+				for k, v := range location.Extras.ToMap() {
+					if str, ok := v.(string); ok {
+						extrasMap[k] = str
+					} else {
+						extrasMap[k] = fmt.Sprintf("%v", v)
+					}
+				}
+				existingLocation.Extras.Update(extrasMap)
+				// Enable upstream if multiple containers
+				if len(existingLocation.Containers) > 1 {
+					existingLocation.UpstreamEnabled = true
+				}
+			} else {
+				// Add new location to existing host
+				existingHost.Locations[path] = location
+			}
+		}
+
+		// Merge upstreams
+		existingHost.Upstreams = append(existingHost.Upstreams, h.Upstreams...)
+
+		// Update host extras - convert map[string]interface{} to map[string]string
+		extrasMap := make(map[string]string)
+		for k, v := range h.Extras.ToMap() {
+			if str, ok := v.(string); ok {
+				extrasMap[k] = str
+			} else {
+				extrasMap[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		existingHost.Extras.Update(extrasMap)
+
+		// Update SSL settings if the new host is secured
+		if h.SSLEnabled && !existingHost.SSLEnabled {
+			existingHost.SetSSL(true, h.SSLFile)
+		}
+	} else {
+		ws.hosts[h.Hostname][h.Port] = h
+	}
+}
+
+// getHost retrieves a host by hostname and port
+func (ws *WebServer) getHost(hostname string, port int) *host.Host {
+	if portMap := ws.hosts[hostname]; portMap != nil {
+		return portMap[port]
+	}
+	return nil
+}
+
+// getAllHosts returns all hosts as a flat slice
+func (ws *WebServer) getAllHosts() []*host.Host {
+	var allHosts []*host.Host
+	for _, portMap := range ws.hosts {
+		for _, h := range portMap {
+			allHosts = append(allHosts, h)
+		}
+	}
+	return allHosts
+}
+
+// getHostsForTemplate converts the new two-level map structure back to the old single-level map for template compatibility
+func (ws *WebServer) getHostsForTemplate() map[string]*host.Host {
+	result := make(map[string]*host.Host)
+	for hostname, portMap := range ws.hosts {
+		for port, h := range portMap {
+			// Create a unique key for the template - use hostname:port if port is not default
+			key := hostname
+			if (h.SSLEnabled && port != 443) || (!h.SSLEnabled && port != 80) {
+				key = fmt.Sprintf("%s:%d", hostname, port)
+			}
+			result[key] = h
+		}
+	}
+	return result
+}
+
+// removeContainerFromHosts removes a container from all hosts and cleans up empty hosts
+func (ws *WebServer) removeContainerFromHosts(containerID string) bool {
+	removed := false
+	hostsToDelete := make([]struct {
+		hostname string
+		port     int
+	}, 0)
+
+	for hostname, portMap := range ws.hosts {
+		for port, h := range portMap {
+			if h.RemoveContainer(containerID) {
+				removed = true
+				ws.log.Info("Removed container %s from host %s:%d", containerID, hostname, port)
+
+				// Check if host is now empty
+				if h.IsEmpty() {
+					hostsToDelete = append(hostsToDelete, struct {
+						hostname string
+						port     int
+					}{hostname, port})
+				}
+			}
+		}
+	}
+
+	// Remove empty hosts
+	for _, hostKey := range hostsToDelete {
+		delete(ws.hosts[hostKey.hostname], hostKey.port)
+		ws.log.Info("Removed empty host %s:%d", hostKey.hostname, hostKey.port)
+
+		// Remove empty hostname entries
+		if len(ws.hosts[hostKey.hostname]) == 0 {
+			delete(ws.hosts, hostKey.hostname)
+			ws.log.Info("Removed empty hostname entry %s", hostKey.hostname)
+		}
+	}
+
+	return removed
 }
