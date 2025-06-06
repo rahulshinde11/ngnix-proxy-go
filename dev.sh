@@ -1,7 +1,7 @@
 #!/bin/bash
 
 set -e
-
+export COMPOSE_BAKE=true
 case "$1" in
     "start")
         echo "Starting development environment..."

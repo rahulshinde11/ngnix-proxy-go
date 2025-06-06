@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 
+	"crypto/x509"
+	"encoding/pem"
+
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/client"
@@ -689,6 +692,65 @@ func (ws *WebServer) reload() error {
 		}
 	}
 
+	// Log container configurations
+	for containerID, container := range ws.containers {
+		ws.log.Info("Valid configuration      Id:%s     %s", containerID, container.Name)
+
+		// Log virtual hosts for this container
+		for hostname, h := range ws.hosts {
+			for _, location := range h.Locations {
+				for _, c := range location.GetContainers() {
+					if c.ID == containerID {
+						ws.log.Info("-   %s://%s:%d/",
+							map[bool]string{true: "https", false: "http"}[h.SSLEnabled],
+							hostname, h.Port)
+
+						// Log target URL
+						ws.log.Info("       ->  http://%s:%d", c.Address, c.Port)
+
+						// Log extras
+						if location.Extras != nil {
+							extras := location.Extras.ToMap()
+							if len(extras) > 0 {
+								ws.log.Info("       Extras:")
+								for key, value := range extras {
+									if key == "injected" {
+										ws.log.Info("         injected : %v", value)
+									} else if key == "security" {
+										ws.log.Info("         security:")
+										if securityMap, ok := value.(map[string]string); ok {
+											for username := range securityMap {
+												ws.log.Info("           %s", username)
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Log SSL certificate status
+	ws.log.Info("[SSL Refresh Thread] SSL certificate status:")
+	for hostname, h := range ws.hosts {
+		if h.SSLEnabled {
+			certPath := filepath.Join("/etc/ssl/certs", h.SSLFile+".crt")
+			data, err := os.ReadFile(certPath)
+			if err == nil {
+				block, _ := pem.Decode(data)
+				if block != nil {
+					cert, err := x509.ParseCertificate(block.Bytes)
+					if err == nil {
+						ws.log.Info("  %-20s - %s", hostname, cert.NotAfter.Format("2006-01-02 15:04:05"))
+					}
+				}
+			}
+		}
+	}
+
 	config, err := ws.template.Render(ws.hosts, ws.config)
 	if err != nil {
 		ws.log.Error("Failed to render nginx template: %v", err)
@@ -702,6 +764,6 @@ func (ws *WebServer) reload() error {
 		return errors.New(errors.ErrorTypeNginx, "failed to update nginx config", err)
 	}
 
-	ws.log.Info("Nginx configuration reloaded successfully")
+	ws.log.Info("Nginx Reloaded Successfully")
 	return nil
 }
