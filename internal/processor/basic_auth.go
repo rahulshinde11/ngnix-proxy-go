@@ -2,197 +2,193 @@ package processor
 
 import (
 	"crypto/rand"
-	"encoding/base64"
 	"fmt"
+	"log"
+	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/rahulshinde/nginx-proxy-go/internal/host"
+	"golang.org/x/crypto/bcrypt"
 )
 
-// BasicAuthProcessor handles basic authentication configuration
-type BasicAuthProcessor struct {
-	basicAuthDir string
+// Credential represents basic auth credentials
+type Credential struct {
+	Username string
+	Password string
+	Path     string
 }
 
-// NewBasicAuthProcessor creates a new BasicAuthProcessor
+// BasicAuthProcessor handles basic auth configuration
+type BasicAuthProcessor struct {
+	basicAuthDir string
+	credentials  map[string]map[string]Credential // host -> path -> credential
+}
+
+// NewBasicAuthProcessor creates a new basic auth processor
 func NewBasicAuthProcessor(basicAuthDir string) *BasicAuthProcessor {
-	if !strings.HasSuffix(basicAuthDir, "/") {
-		basicAuthDir += "/"
-	}
+	log.Printf("Initializing basic auth processor with directory: %s", basicAuthDir)
 	return &BasicAuthProcessor{
 		basicAuthDir: basicAuthDir,
+		credentials:  make(map[string]map[string]Credential),
 	}
 }
 
 // ProcessBasicAuth processes basic auth configuration from environment variables
-func (p *BasicAuthProcessor) ProcessBasicAuth(environments map[string]string, hosts map[string]map[int]*host.Host) {
-	// Find all PROXY_BASIC_AUTH environment variables
-	for key, value := range environments {
-		if !strings.HasPrefix(key, "PROXY_BASIC_AUTH") {
-			continue
-		}
-
-		// Parse the basic auth configuration
-		parts := strings.SplitN(value, "->", 2)
-		if len(parts) != 2 {
-			// Global basic auth for all hosts
-			if authMap := p.parseAuthMap(value); authMap != nil {
-				for _, portMap := range hosts {
-					for _, h := range portMap {
-						p.updateHostSecurity(h, "/", authMap)
-					}
-				}
-			}
-			continue
-		}
-
-		// Host-specific basic auth
-		hostPart := strings.TrimSpace(parts[0])
-		authPart := strings.TrimSpace(parts[1])
-
-		// Parse hostname and port
-		hostname := hostPart
-		port := 80
-		if strings.Contains(hostPart, ":") {
-			parts := strings.Split(hostPart, ":")
-			hostname = parts[0]
-			fmt.Sscanf(parts[1], "%d", &port)
-		}
-
-		// Parse auth credentials
-		if authMap := p.parseAuthMap(authPart); authMap != nil {
-			// Find the host and update its security
-			if portMap, ok := hosts[hostname]; ok {
-				if h, ok := portMap[port]; ok {
-					p.updateHostSecurity(h, "/", authMap)
-				}
-			}
-		}
+func (p *BasicAuthProcessor) ProcessBasicAuth(environments map[string]string, hosts map[string]map[int]*host.Host) error {
+	// Find basic auth config
+	authConfig, ok := environments["PROXY_BASIC_AUTH"]
+	if !ok {
+		log.Println("No basic auth configuration found")
+		return nil
 	}
+
+	// Remove surrounding quotes if present
+	authConfig = strings.Trim(authConfig, `"`)
+	log.Printf("Processing basic auth: %s", authConfig)
+
+	// Parse URL and credentials
+	parts := strings.Split(authConfig, " -> ")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid basic auth format: %s", authConfig)
+	}
+
+	// Parse URL
+	urlStr := strings.TrimSpace(parts[0])
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL in basic auth config: %v", err)
+	}
+
+	hostname := parsedURL.Hostname()
+	path := parsedURL.Path
+	if path == "" {
+		path = "/"
+	}
+
+	// Parse credentials
+	credentials := strings.TrimSpace(parts[1])
+	credParts := strings.Split(credentials, ":")
+	if len(credParts) != 2 {
+		return fmt.Errorf("invalid credentials format: %s", credentials)
+	}
+
+	username := strings.TrimSpace(credParts[0])
+	password := strings.TrimSpace(credParts[1])
+
+	// Validate credentials
+	if len(username) < 3 {
+		return fmt.Errorf("username must be at least 3 characters long")
+	}
+	if len(password) < 3 {
+		return fmt.Errorf("password must be at least 3 characters long")
+	}
+
+	log.Printf("Configuring basic auth for %s: user=%s", hostname, username)
+
+	// Store credentials
+	if _, ok := p.credentials[hostname]; !ok {
+		p.credentials[hostname] = make(map[string]Credential)
+	}
+	p.credentials[hostname][path] = Credential{
+		Username: username,
+		Password: password,
+		Path:     path,
+	}
+
+	// Update host security
+	return p.updateHostSecurity(hostname, path, hosts)
 }
 
-// parseAuthMap parses a comma-separated list of username:password pairs
-func (p *BasicAuthProcessor) parseAuthMap(authStr string) map[string]string {
-	authMap := make(map[string]string)
-	for _, pair := range strings.Split(authStr, ",") {
-		parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
-		if len(parts) == 2 {
-			username := strings.TrimSpace(parts[0])
-			password := strings.TrimSpace(parts[1])
-			if len(username) > 2 && len(password) > 2 {
-				authMap[username] = password
-			}
-		}
-	}
-	return authMap
-}
+// updateHostSecurity updates the security configuration for a host
+func (p *BasicAuthProcessor) updateHostSecurity(hostname string, path string, hosts map[string]map[int]*host.Host) error {
+	log.Printf("Updating security for %s at %s", hostname, path)
 
-// updateHostSecurity updates the security configuration for a host or location
-func (p *BasicAuthProcessor) updateHostSecurity(h *host.Host, path string, authMap map[string]string) {
-	if path == "/" {
-		// Update host-level security
-		h.UpdateExtrasContent("security", authMap)
-		h.BasicAuth = true
-		h.BasicAuthFile = p.generateHtpasswdFile(h.Hostname, "_", authMap)
-	} else {
-		// Update location-level security
-		if loc, ok := h.Locations[path]; ok {
-			loc.UpdateExtrasContent("security", authMap)
-			loc.BasicAuth = true
-			loc.BasicAuthFile = p.generateHtpasswdFile(h.Hostname, strings.ReplaceAll(path, "/", "_"), authMap)
-		}
+	// Get host from hosts map
+	hostMap, ok := hosts[hostname]
+	if !ok {
+		return fmt.Errorf("host not found: %s", hostname)
 	}
-}
 
-// generateHtpasswdFile generates an htpasswd file for basic auth
-func (p *BasicAuthProcessor) generateHtpasswdFile(hostname, path string, authMap map[string]string) string {
-	// Create directory if it doesn't exist
-	dir := filepath.Join(p.basicAuthDir, hostname)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return ""
+	// Get the first host (they should all have the same configuration)
+	var host *host.Host
+	for _, h := range hostMap {
+		host = h
+		break
+	}
+
+	if host == nil {
+		return fmt.Errorf("no host configuration found for: %s", hostname)
+	}
+
+	// Create basic auth directory if it doesn't exist
+	if err := os.MkdirAll(p.basicAuthDir, 0755); err != nil {
+		return fmt.Errorf("failed to create basic auth directory: %v", err)
 	}
 
 	// Generate htpasswd file
-	filename := filepath.Join(dir, path)
+	htpasswdFile := filepath.Join(p.basicAuthDir, hostname+".htpasswd")
+	authMap := make(map[string]string)
+	for _, cred := range p.credentials[hostname] {
+		authMap[cred.Username] = cred.Password
+	}
+	if err := p.generateHtpasswdFile(htpasswdFile, authMap); err != nil {
+		return fmt.Errorf("failed to generate htpasswd file: %v", err)
+	}
+
+	log.Printf("Added credentials to %s", htpasswdFile)
+
+	// Update host configuration
+	if path == "/" {
+		host.SetBasicAuth(true, htpasswdFile)
+		log.Printf("Enabled basic auth for %s", hostname)
+	} else {
+		host.SetLocationBasicAuth(path, true, htpasswdFile)
+		log.Printf("Enabled basic auth for %s at %s", hostname, path)
+	}
+
+	return nil
+}
+
+// randomSalt generates a random salt string of a given length
+func randomSalt(length int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./"
+	result := make([]byte, length)
+	for i := range result {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+		result[i] = letters[n.Int64()]
+	}
+	return string(result)
+}
+
+// generateHtpasswdFile generates an htpasswd file for basic auth
+func (p *BasicAuthProcessor) generateHtpasswdFile(filename string, authMap map[string]string) error {
+	dir := filepath.Dir(filename)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("Failed to create directory %s: %v", dir, err)
+		return err
+	}
 	file, err := os.Create(filename)
 	if err != nil {
-		return ""
+		log.Printf("Failed to create htpasswd file %s: %v", filename, err)
+		return err
 	}
 	defer file.Close()
-
-	// Write credentials
 	for username, password := range authMap {
-		// Generate salt
-		salt := make([]byte, 2)
-		if _, err := rand.Read(salt); err != nil {
+		// Generate bcrypt hash with cost 10 (good balance between security and performance)
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
+		if err != nil {
+			log.Printf("Failed to hash password for user %s: %v", username, err)
 			continue
 		}
-
-		// Hash password with salt
-		hashed := p.hashPassword(password, salt)
-		if hashed == "" {
-			continue
+		// Format: username:$2y$10$hash
+		if _, err := fmt.Fprintf(file, "%s:%s\n", username, string(hash)); err != nil {
+			log.Printf("Failed to write credentials for user %s: %v", username, err)
+			return err
 		}
-
-		// Write to file
-		fmt.Fprintf(file, "%s:%s\n", username, hashed)
+		log.Printf("Added credentials for user %s to file %s", username, filename)
 	}
-
-	return filename
-}
-
-// hashPassword hashes a password using bcrypt (Apache htpasswd compatible)
-func (p *BasicAuthProcessor) hashPassword(password string, salt []byte) string {
-	// Use bcrypt which is supported by Apache and more secure than MD5
-	cost := 10 // Default bcrypt cost
-	hashed, err := p.bcryptHash(password, cost)
-	if err != nil {
-		// Fallback to basic crypt if bcrypt fails
-		return p.fallbackCrypt(password, salt)
-	}
-	return hashed
-}
-
-// bcryptHash implements bcrypt hashing (Apache htpasswd compatible)
-func (p *BasicAuthProcessor) bcryptHash(password string, cost int) (string, error) {
-	// This is a placeholder for bcrypt implementation
-	// In a real implementation, you would use golang.org/x/crypto/bcrypt
-	// For now, we'll use a simplified approach
-
-	// Generate a simple hash that nginx can understand
-	// Using SHA-1 which is still supported by nginx basic auth
-	import_needed := "crypto/sha1"
-	_ = import_needed // Placeholder to indicate sha1 import needed
-
-	return p.sha1Hash(password), nil
-}
-
-// sha1Hash creates a SHA-1 hash compatible with nginx basic auth
-func (p *BasicAuthProcessor) sha1Hash(password string) string {
-	// This creates a {SHA} format hash that nginx understands
-	// In real implementation, you would:
-	// 1. import crypto/sha1
-	// 2. h := sha1.New()
-	// 3. h.Write([]byte(password))
-	// 4. return "{SHA}" + base64.StdEncoding.EncodeToString(h.Sum(nil))
-
-	// For now, return a placeholder that nginx will accept
-	return "{SHA}" + base64.StdEncoding.EncodeToString([]byte("placeholder_hash_"+password))
-}
-
-// fallbackCrypt implements a fallback crypt algorithm
-func (p *BasicAuthProcessor) fallbackCrypt(password string, salt []byte) string {
-	// Fallback implementation using simple encoding
-	saltStr := base64.StdEncoding.EncodeToString(salt)
-	if len(saltStr) > 8 {
-		saltStr = saltStr[:8]
-	}
-
-	// Create a basic hash format that nginx can parse
-	combined := password + saltStr
-	encoded := base64.StdEncoding.EncodeToString([]byte(combined))
-
-	return "$1$" + saltStr + "$" + encoded
+	return nil
 }

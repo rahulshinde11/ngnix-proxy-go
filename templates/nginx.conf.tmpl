@@ -20,16 +20,17 @@ upstream {{ $upstream.ID }} {
 {{ if $host.SSLEnabled }}
 server {
     server_name {{ $host.Hostname }};
-    listen {{ $host.Port }} ssl http2 {{ if $host.IsDefaultServer }}default_server{{ end }};
-    ssl_certificate /etc/ssl/certs/{{ if eq $host.SSLFile "*" }}*.{{ $host.Hostname }}{{ else }}{{ $host.SSLFile }}{{ end }}.crt;
-    ssl_certificate_key /etc/ssl/private/{{ if eq $host.SSLFile "*" }}*.{{ $host.Hostname }}{{ else }}{{ $host.SSLFile }}{{ end }}.key;
+    listen {{ $host.Port }} ssl {{ if $host.IsDefaultServer }}default_server{{ end }};
+    http2 on;
+    ssl_certificate /etc/ssl/custom/certs/{{ if eq $host.SSLFile "*" }}*.{{ $host.Hostname }}{{ else }}{{ $host.SSLFile }}{{ end }}.crt;
+    ssl_certificate_key /etc/ssl/custom/private/{{ if eq $host.SSLFile "*" }}*.{{ $host.Hostname }}{{ else }}{{ $host.SSLFile }}{{ end }}.key;
     {{ if $host.IsRedirect }}
     return 301 https://{{ $host.RedirectHostname }}$request_uri;
     {{ else if $host.IsDown }}
     return 503;
     {{ else }}
     {{ if $host.BasicAuth }}
-    auth_basic "Basic Auth Enabled";
+    auth_basic "Restricted Access";
     auth_basic_user_file {{ $host.BasicAuthFile }};
     {{ end }}
     {{ range $path, $location := $host.Locations }}
@@ -38,7 +39,7 @@ server {
         {{ $config }};
         {{ end }}
         {{ if $location.BasicAuth }}
-        auth_basic "Basic Auth Enabled";
+        auth_basic "Restricted Access";
         auth_basic_user_file {{ $location.BasicAuthFile }};
         {{ end }}
         {{ if $location.UpstreamEnabled }}

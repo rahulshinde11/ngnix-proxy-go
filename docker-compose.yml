@@ -7,14 +7,14 @@ services:
     environment:
       NGINX_CONF_DIR: /etc/nginx
       CHALLENGE_DIR: /tmp/acme-challenges
-      SSL_DIR: /etc/ssl
+      SSL_DIR: /etc/ssl/custom
       HOSTNAME: nginx-proxy-go-dev
       GO_DEBUG_ENABLE: 'false'
       GO_DEBUG_PORT: '2345'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - nginx-proxy-go-nginx:/etc/nginx
-      - ./ssl:/etc/ssl
+      - ./ssl:/etc/ssl/custom
       - nginx-proxy-go-acme:/tmp/acme-challenges
     ports:
       - "2345:2345" # Delve debug port

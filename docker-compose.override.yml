@@ -2,28 +2,32 @@ version: '3.8'
 
 services:
   nginx-proxy-go:
-    build:
-      context: .
-      target: dev  # Use development stage
-    volumes:
-      # Bind mount source code for hot reloading
-      - .:/app/src:cached
-      # Keep these as named volumes for persistence
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./ssl:/etc/ssl
-      - nginx-proxy-go-nginx:/etc/nginx
-      - nginx-proxy-go-acme:/tmp/acme-challenges
-      # Cache Go modules and build cache
-      - go-mod-cache:/go/pkg/mod
-      - go-build-cache:/root/.cache/go-build
+    build: .
+    container_name: nginx-proxy-go-dev
     environment:
-      GO_DEBUG_ENABLE: 'true'
       NGINX_CONF_DIR: /etc/nginx
       CHALLENGE_DIR: /tmp/acme-challenges
-      SSL_DIR: /etc/ssl
+      SSL_DIR: /etc/ssl/custom
       HOSTNAME: nginx-proxy-go-dev
-    working_dir: /app/src
+      GO_DEBUG_ENABLE: 'true'
+      GO_DEBUG_PORT: '2345'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - nginx-proxy-go-nginx:/etc/nginx
+      - ./ssl:/etc/ssl/custom
+      - nginx-proxy-go-acme:/tmp/acme-challenges
+    ports:
+      - "2345:2345" # Delve debug port
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
 
 volumes:
-  go-mod-cache:
-  go-build-cache: 
+  nginx-proxy-go-nginx:
+  nginx-proxy-go-ssl:
+  nginx-proxy-go-acme:
+
+networks:
+  default:
+    name: nginx-proxy
+    external: true 

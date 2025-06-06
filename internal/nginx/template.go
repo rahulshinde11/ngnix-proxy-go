@@ -2,6 +2,7 @@ package nginx
 
 import (
 	"bytes"
+	"fmt"
 	"text/template"
 
 	"github.com/rahulshinde/nginx-proxy-go/internal/config"
@@ -37,4 +38,48 @@ func (t *Template) Render(hosts map[string]*host.Host, cfg *config.Config) (stri
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// BasicAuthDirectives returns the basic auth directives for a host
+func BasicAuthDirectives(host *host.Host) string {
+	if !host.BasicAuth {
+		return ""
+	}
+
+	authFile := host.Extras.Get("auth_file")
+	if authFile == nil {
+		return ""
+	}
+
+	return generateBasicAuthConfig(authFile.(string))
+}
+
+// LocationBasicAuthDirectives returns the basic auth directives for a location
+func LocationBasicAuthDirectives(location *host.Location) string {
+	if !location.BasicAuth {
+		return ""
+	}
+
+	authFile := location.Extras.Get("auth_file")
+	if authFile == nil {
+		return ""
+	}
+
+	return generateLocationBasicAuthConfig(location.Path, authFile.(string))
+}
+
+func generateBasicAuthConfig(authFile string) string {
+	return fmt.Sprintf(`
+auth_basic "Restricted Access";
+auth_basic_user_file %s;
+auth_basic_hash_type bcrypt;`, authFile)
+}
+
+func generateLocationBasicAuthConfig(path string, authFile string) string {
+	return fmt.Sprintf(`
+location %s {
+    auth_basic "Restricted Access";
+    auth_basic_user_file %s;
+    auth_basic_hash_type bcrypt;
+}`, path, authFile)
 }

@@ -2,6 +2,7 @@ package host
 
 import (
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -184,15 +185,19 @@ func (h *Host) SetRedirect(redirectHostname string) {
 
 // SetBasicAuth enables basic authentication for the host
 func (h *Host) SetBasicAuth(enabled bool, authFile string) {
+	log.Printf("Setting basic auth for host %s: enabled=%v, file=%s", h.Hostname, enabled, authFile)
 	h.BasicAuth = enabled
 	h.BasicAuthFile = authFile
 }
 
 // SetLocationBasicAuth enables basic authentication for a specific location
 func (h *Host) SetLocationBasicAuth(path string, enabled bool, authFile string) {
+	log.Printf("Setting basic auth for location %s on host %s: enabled=%v, file=%s", path, h.Hostname, enabled, authFile)
 	if loc, ok := h.Locations[path]; ok {
 		loc.BasicAuth = enabled
 		loc.BasicAuthFile = authFile
+	} else {
+		log.Printf("Location %s not found on host %s", path, h.Hostname)
 	}
 }
 
@@ -439,4 +444,30 @@ func (h *Host) IsEmpty() bool {
 		}
 	}
 	return true
+}
+
+// ProcessBasicAuthConfig processes the basic auth configuration for a host
+func (h *Host) ProcessBasicAuthConfig(authConfig string) error {
+	if authConfig == "" {
+		log.Printf("No basic auth config for host %s", h.Hostname)
+		return nil
+	}
+
+	log.Printf("Processing basic auth config for host %s: %s", h.Hostname, authConfig)
+	credentials, err := ProcessBasicAuthConfig(authConfig, h.Hostname)
+	if err != nil {
+		log.Printf("Error processing basic auth for host %s: %v", h.Hostname, err)
+		return err
+	}
+
+	if credentials != nil {
+		log.Printf("Setting basic auth for host %s with credentials: %v", h.Hostname, credentials)
+		h.Extras.Set("security", credentials)
+		h.BasicAuth = true
+		log.Printf("Basic auth enabled for host %s", h.Hostname)
+	} else {
+		log.Printf("No valid credentials found for host %s", h.Hostname)
+	}
+
+	return nil
 }

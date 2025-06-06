@@ -40,7 +40,7 @@ func GetEnvMap(container types.ContainerJSON) map[string]string {
 func parseEnvironment(labels map[string]string) map[string]string {
 	env := make(map[string]string)
 	for k, v := range labels {
-		if strings.HasPrefix(k, "VIRTUAL_HOST") || strings.HasPrefix(k, "STATIC_VIRTUAL_HOST") {
+		if strings.HasPrefix(k, "VIRTUAL_HOST") || strings.HasPrefix(k, "STATIC_VIRTUAL_HOST") || k == "PROXY_BASIC_AUTH" {
 			env[k] = v
 		}
 	}

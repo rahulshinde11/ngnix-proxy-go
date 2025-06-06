@@ -64,7 +64,7 @@ func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error)
 	acmeManager := acme.NewManager(apiURL, cfg.ChallengeDir)
 
 	// Create certificate manager
-	certManager := ssl.NewCertificateManager("/etc/ssl", acmeManager, logger)
+	certManager := ssl.NewCertificateManager("/etc/ssl/custom", acmeManager, logger)
 
 	ws := &WebServer{
 		client:                 client,
@@ -766,8 +766,8 @@ func (ws *WebServer) reload() error {
 				}
 
 				// Check for exact certificate files
-				certPath := filepath.Join("/etc/ssl/certs", hostname+".crt")
-				keyPath := filepath.Join("/etc/ssl/private", hostname+".key")
+				certPath := filepath.Join("/etc/ssl/custom/certs", hostname+".crt")
+				keyPath := filepath.Join("/etc/ssl/custom/private", hostname+".key")
 
 				if _, err := os.Stat(certPath); err == nil {
 					if _, err := os.Stat(keyPath); err == nil {
@@ -782,8 +782,8 @@ func (ws *WebServer) reload() error {
 				parts := strings.Split(hostname, ".")
 				if len(parts) > 2 {
 					wildcardDomain = "*." + strings.Join(parts[1:], ".")
-					certPath = filepath.Join("/etc/ssl/certs", wildcardDomain+".crt")
-					keyPath = filepath.Join("/etc/ssl/private", wildcardDomain+".key")
+					certPath = filepath.Join("/etc/ssl/custom/certs", wildcardDomain+".crt")
+					keyPath = filepath.Join("/etc/ssl/custom/private", wildcardDomain+".key")
 					if _, err := os.Stat(certPath); err == nil {
 						if _, err := os.Stat(keyPath); err == nil {
 							h.SSLFile = wildcardDomain
@@ -794,8 +794,8 @@ func (ws *WebServer) reload() error {
 				}
 
 				// Check for self-signed certificate
-				selfSignedCertPath := filepath.Join("/etc/ssl/certs", hostname+".selfsigned.crt")
-				selfSignedKeyPath := filepath.Join("/etc/ssl/private", hostname+".selfsigned.key")
+				selfSignedCertPath := filepath.Join("/etc/ssl/custom/certs", hostname+".selfsigned.crt")
+				selfSignedKeyPath := filepath.Join("/etc/ssl/custom/private", hostname+".selfsigned.key")
 
 				if _, err := os.Stat(selfSignedCertPath); err == nil {
 					if _, err := os.Stat(selfSignedKeyPath); err == nil {
@@ -859,7 +859,7 @@ func (ws *WebServer) reload() error {
 	for hostname, portMap := range ws.hosts {
 		for _, h := range portMap {
 			if h.SSLEnabled {
-				certPath := filepath.Join("/etc/ssl/certs", h.SSLFile+".crt")
+				certPath := filepath.Join("/etc/ssl/custom/certs", h.SSLFile+".crt")
 				data, err := os.ReadFile(certPath)
 				if err == nil {
 					block, _ := pem.Decode(data)
