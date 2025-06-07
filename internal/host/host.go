@@ -124,6 +124,9 @@ func (h *Host) AddLocation(path string, container *Container, extras map[string]
 	// Update extras
 	if len(extras) > 0 {
 		location.Extras.Update(extras)
+		if injected, ok := location.Extras.Get("injected").([]string); ok {
+			location.InjectedConfigs = injected
+		}
 	}
 
 	// Enable upstream if multiple containers
