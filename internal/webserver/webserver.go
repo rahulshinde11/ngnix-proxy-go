@@ -818,15 +818,33 @@ func (ws *WebServer) reload() error {
 		// Log virtual hosts for this container
 		for hostname, portMap := range ws.hosts {
 			for port, h := range portMap {
-				for _, location := range h.Locations {
+				for path, location := range h.Locations {
 					for _, c := range location.GetContainers() {
 						if c.ID == containerID {
-							ws.log.Info("-   %s://%s:%d/",
-								map[bool]string{true: "https", false: "http"}[h.SSLEnabled],
-								hostname, port)
+							// Show path in the URL and include WebSocket/HTTP status
+							wsStatus := ""
+							if location.WebSocket && location.HTTP {
+								wsStatus = " [WebSocket+HTTP]"
+							} else if location.WebSocket {
+								wsStatus = " [WebSocket]"
+							} else if location.HTTP {
+								wsStatus = " [HTTP]"
+							}
 
-							// Log target URL
-							ws.log.Info("       ->  http://%s:%d", c.Address, c.Port)
+							ws.log.Info("-   %s://%s:%d%s%s",
+								map[bool]string{true: "https", false: "http"}[h.SSLEnabled],
+								hostname, port, path, wsStatus)
+
+							// Log target URL with path
+							targetPath := c.Path
+							if targetPath == "" || targetPath == "/" {
+								targetPath = path
+							}
+							ws.log.Info("       ->  http://%s:%d%s", c.Address, c.Port, targetPath)
+
+							// Add debug info about schemes
+							ws.log.Debug("       Schemes: original=%s, current=%s, container=%s",
+								h.OriginalScheme, h.Scheme, c.Scheme)
 
 							// Log extras
 							if location.Extras != nil {

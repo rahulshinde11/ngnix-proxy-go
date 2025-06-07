@@ -3,6 +3,7 @@ package host
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +23,7 @@ type Host struct {
 	Locations        map[string]*Location
 	Upstreams        []*Upstream
 	Scheme           string
+	OriginalScheme   string // Preserve original scheme for WebSocket detection
 	IsStatic         bool
 	Extras           *ExtrasMap
 }
@@ -134,10 +136,35 @@ func (h *Host) AddLocation(path string, container *Container, extras map[string]
 		location.UpstreamEnabled = true
 	}
 
-	// Set WebSocket flag if scheme is ws or wss
-	if container.Scheme == "ws" || container.Scheme == "wss" {
-		location.WebSocket = true
+	// Set WebSocket and HTTP flags based on original scheme (like Python version)
+	// Use OriginalScheme to preserve original scheme information before SSL processing
+	originalScheme := h.OriginalScheme
+	if originalScheme == "" {
+		originalScheme = h.Scheme // fallback to current scheme
 	}
+
+	// Check both container scheme and original host scheme for WebSocket
+	isWebSocket := container.Scheme == "ws" || container.Scheme == "wss" ||
+		originalScheme == "ws" || originalScheme == "wss"
+
+	// Check if flags are explicitly set in extras (from processor)
+	if websocketStr, ok := extras["websocket"]; ok {
+		if websocketBool, err := strconv.ParseBool(websocketStr); err == nil {
+			isWebSocket = websocketBool
+		}
+	}
+	location.WebSocket = isWebSocket
+
+	// Set HTTP flag - true for http/https schemes
+	isHTTP := originalScheme == "http" || originalScheme == "https" ||
+		container.Scheme == "http" || container.Scheme == "https"
+
+	if httpStr, ok := extras["http"]; ok {
+		if httpBool, err := strconv.ParseBool(httpStr); err == nil {
+			isHTTP = httpBool
+		}
+	}
+	location.HTTP = isHTTP
 }
 
 // UpdateExtras updates the location's extras with new values
@@ -295,14 +322,19 @@ func ParseVirtualHost(virtualHost string) (*VirtualHostConfig, error) {
 	if internalPart != "" {
 		// Check if it's a port specification (starts with :)
 		if strings.HasPrefix(internalPart, ":") {
-			// Format: :port
-			path = "/" // Reset to root when port is explicitly specified
-			if len(internalPart) > 1 {
-				_, err := fmt.Sscanf(internalPart[1:], "%d", &containerPort)
+			// Format: :port[/path] - parse port and optional path
+			portAndPath := strings.Split(internalPart[1:], "/")
+			if portAndPath[0] != "" {
+				_, err := fmt.Sscanf(portAndPath[0], "%d", &containerPort)
 				if err != nil {
 					return nil, fmt.Errorf("invalid container port in VIRTUAL_HOST: %s", virtualHost)
 				}
 			}
+			// If path is specified in internal part, use it; otherwise keep external path
+			if len(portAndPath) > 1 {
+				path = "/" + strings.Join(portAndPath[1:], "/")
+			}
+			// Note: we keep the external path if no path is specified in internal part
 		} else if strings.Contains(internalPart, "://") {
 			// Format: scheme://host:port/path or just /path
 			if strings.HasPrefix(internalPart, "https://") {

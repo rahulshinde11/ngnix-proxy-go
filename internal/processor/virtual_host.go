@@ -78,6 +78,7 @@ func (p *VirtualHostProcessor) Process(cont types.Container) ([]*host.Host, erro
 		h := host.NewHost(config.Hostname, config.ServerPort)
 		h.IsStatic = strings.HasPrefix(vh, "STATIC_VIRTUAL_HOST")
 		h.Scheme = config.Scheme
+		h.OriginalScheme = config.Scheme // Preserve original scheme for WebSocket detection
 
 		// Set SSL if enabled (for https or wss schemes)
 		if config.Scheme == "https" || config.Scheme == "wss" {
@@ -104,12 +105,16 @@ func (p *VirtualHostProcessor) Process(cont types.Container) ([]*host.Host, erro
 			}
 		}
 
+		// Set WebSocket and HTTP flags based on external scheme (like Python version)
+		isWebSocket := config.Scheme == "ws" || config.Scheme == "wss"
+		isHTTP := config.Scheme == "http" || config.Scheme == "https"
+
 		// Add default values if not present in extras
 		if _, ok := extrasMap["websocket"]; !ok {
-			extrasMap["websocket"] = "false"
+			extrasMap["websocket"] = fmt.Sprintf("%v", isWebSocket)
 		}
 		if _, ok := extrasMap["http"]; !ok {
-			extrasMap["http"] = "true"
+			extrasMap["http"] = fmt.Sprintf("%v", isHTTP)
 		}
 		if _, ok := extrasMap["scheme"]; !ok {
 			extrasMap["scheme"] = config.ContainerScheme
@@ -156,6 +161,7 @@ func (p *VirtualHostProcessor) ProcessStaticHosts(staticHosts []string) ([]*host
 		h := host.NewHost(config.Hostname, config.ServerPort)
 		h.IsStatic = true
 		h.Scheme = config.Scheme
+		h.OriginalScheme = config.Scheme // Preserve original scheme for WebSocket detection
 
 		// Set SSL if enabled (for https or wss schemes)
 		if config.Scheme == "https" || config.Scheme == "wss" {
@@ -337,6 +343,14 @@ func ProcessVirtualHosts(container types.ContainerJSON, env map[string]string, k
 			if h.SSLEnabled && !existingHost.SSLEnabled {
 				existingHost.SetSSL(true, h.SSLFile)
 			}
+			// Preserve WebSocket OriginalScheme - prioritize WebSocket schemes over HTTP schemes
+			// Once a WebSocket scheme is set, never override it with HTTP/HTTPS
+			if h.OriginalScheme == "ws" || h.OriginalScheme == "wss" {
+				existingHost.OriginalScheme = h.OriginalScheme
+			} else if existingHost.OriginalScheme != "ws" && existingHost.OriginalScheme != "wss" {
+				// Only set non-WebSocket scheme if existing host doesn't have WebSocket scheme
+				existingHost.OriginalScheme = h.OriginalScheme
+			}
 		} else {
 			// Add container to new host
 			h.AddLocation(location, containerData, extras)
@@ -359,6 +373,7 @@ func parseHostEntry(hostConfig string) (*host.Host, string, *host.Container, map
 	h := host.NewHost(config.Hostname, config.ServerPort)
 	h.IsStatic = strings.HasPrefix(hostConfig, "STATIC_VIRTUAL_HOST")
 	h.Scheme = config.Scheme
+	h.OriginalScheme = config.Scheme // Preserve original scheme for WebSocket detection
 
 	// Set SSL if enabled (for https or wss schemes)
 	if config.Scheme == "https" || config.Scheme == "wss" {
