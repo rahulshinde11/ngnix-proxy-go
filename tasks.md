@@ -44,11 +44,15 @@
 - [x] **SSL Certificate Blacklisting**: Track failed domains and temporarily blacklist them
 - [x] **Certificate Reuse Logic**: Share certificates across multiple domains
 - [x] **Manual SSL Management**: Equivalent of `getssl` script for manual certificate operations
+- [x] **Multi-stage Docker Build**: Optimized container with development and production stages
+- [x] **Debug Support**: Integrated Delve debugger with port 2345
 
 ### ✅ HIGH PRIORITY - Missing Configuration Features (COMPLETED)
 - [x] **PROXY_FULL_REDIRECT**: Domain redirection support (`example.com->main.com`)
 - [x] **PROXY_DEFAULT_SERVER**: Default server for unmatched requests
 - [x] **Wildcard Certificate Support**: Enhanced wildcard certificate handling
+- [x] **Environment Variable Configuration**: Comprehensive environment variable support
+- [x] **Template Externalization**: Nginx configuration templates moved to external files
 
 ### ✅ HIGH PRIORITY - Container Management (COMPLETED)
 - [x] **Manual Certificate CLI**: Create `getssl` equivalent command-line tool

@@ -29,12 +29,12 @@ docker network create frontend
 docker run --network frontend \
     --name nginx-proxy-go \
     -v /var/run/docker.sock:/var/run/docker.sock:ro \
-    -v /etc/ssl:/etc/ssl \
+    -v /etc/ssl:/etc/ssl/custom \
     -v /etc/nginx/dhparam:/etc/nginx/dhparam \
     -p 80:80 \
     -p 443:443 \
     -d --restart always \
-    shinde11/nginx-proxy
+    nginx-proxy-go
 ```
 
 ### Setup your container
@@ -67,13 +67,18 @@ docker run --network frontend \
 The following directories can be mounted as volumes to persist configurations:
 - `/etc/nginx/conf.d` - nginx configuration directory
 - `/etc/nginx/dhparam` - directory for storing DH parameters for SSL connections
-- `/etc/ssl` - directory for storing SSL certificates and private keys
+- `/etc/ssl/custom` - directory for storing SSL certificates and private keys
 - `/var/log/nginx` - nginx logs directory
 - `/tmp/acme-challenges` - directory for Let's Encrypt challenges
 
 Environment variables for customizing behavior:
 - `DHPARAM_SIZE` (default: 2048) - Size of DH parameter for SSL certificates
 - `CLIENT_MAX_BODY_SIZE` (default: 1m) - Default max body size for all servers
+- `NGINX_CONF_DIR` (default: /etc/nginx) - Nginx configuration directory
+- `CHALLENGE_DIR` (default: /tmp/acme-challenges) - ACME challenge directory
+- `SSL_DIR` (default: /etc/ssl/custom) - SSL certificates directory
+- `GO_DEBUG_ENABLE` (default: false) - Enable debug mode
+- `GO_DEBUG_PORT` (default: 2345) - Debug port for Delve debugger
 
 ### Virtual Host Configuration
 
@@ -130,8 +135,8 @@ The container automatically handles SSL certificate issuance using Let's Encrypt
 #### Using Your Own SSL Certificate
 
 Place your SSL certificate and private key in the container:
-- Certificate: `/etc/ssl/certs/domain.crt`
-- Private key: `/etc/ssl/private/domain.key`
+- Certificate: `/etc/ssl/custom/certs/domain.crt`
+- Private key: `/etc/ssl/custom/private/domain.key`
 
 Wildcard certificates are supported (e.g., `*.example.com`).
 
@@ -169,6 +174,8 @@ By default, requests to unregistered server names return a 503 error. To forward
 -e "PROXY_DEFAULT_SERVER=true"
 ```
 
+Note: The default server configuration is controlled by the `DEFAULT_HOST` environment variable (default: true).
+
 For HTTPS connections, consider setting up wildcard certificates to avoid SSL certificate errors.
 
 ## Development
@@ -188,6 +195,8 @@ docker network create nginx-proxy
 # Start development environment (first time - downloads dependencies)
 ./dev.sh start
 ```
+
+> **Note:** The development environment uses a multi-stage Docker build with a development stage that includes Delve debugger support and hot-reloading capabilities.
 
 > **Note:** The project includes a comprehensive `.gitignore` file that excludes binaries, build artifacts, SSL certificates, and other development files from version control.
 
@@ -284,10 +293,19 @@ If you prefer the traditional approach:
 # Build the container
 docker build -t nginx-proxy-go .
 
-# Run in development mode
+# Run in production mode
+./run.sh
+
+# Run in debug mode
+./run-debug.sh
+
+# Or manually run with debug support
 docker run --rm -it \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v $(pwd):/app/src \
+  -v nginx-proxy-go-nginx:/etc/nginx \
+  -v nginx-proxy-go-ssl:/etc/ssl/custom \
+  -v nginx-proxy-go-acme:/tmp/acme-challenges \
+  -e GO_DEBUG_ENABLE=true \
   -p 80:80 -p 443:443 -p 2345:2345 \
   nginx-proxy-go
 ```
@@ -296,22 +314,34 @@ docker run --rm -it \
 
 ```
 nginx-proxy-go/
-├── internal/           # Internal packages
-│   ├── config/        # Configuration handling
-│   ├── container/     # Container management
-│   ├── errors/        # Error handling
-│   ├── event/         # Event processing
-│   ├── host/          # Host configuration
-│   ├── logger/        # Logging
-│   ├── nginx/         # Nginx configuration
-│   └── processor/     # Request processing
-├── nginx/             # Nginx configuration files
-├── acme-challenges/   # Let's Encrypt challenges
-├── ssl/              # SSL certificates and keys
-├── Dockerfile        # Container definition
+├── cmd/
+│   └── getssl/        # Manual SSL certificate management CLI
+├── internal/          # Internal packages
+│   ├── acme/         # ACME/Let's Encrypt integration
+│   ├── config/       # Configuration handling
+│   ├── container/    # Container management
+│   ├── debug/        # Debug mode support
+│   ├── errors/       # Error handling
+│   ├── event/        # Event processing
+│   ├── host/         # Host configuration
+│   ├── logger/       # Logging
+│   ├── nginx/        # Nginx configuration
+│   ├── processor/    # Request processing (basic auth, redirects, etc.)
+│   ├── server/       # Server management
+│   ├── ssl/          # SSL certificate management
+│   └── webserver/    # Main web server
+├── nginx/            # Nginx configuration files
+├── templates/        # Nginx configuration templates
+├── Dockerfile        # Multi-stage container definition
 ├── docker-compose.yml # Development environment
-├── main.go           # Application entry point
-└── go.mod            # Go module definition
+├── docker-compose-prod.yaml # Production environment
+├── dev.sh           # Development workflow script
+├── build.sh         # Build script
+├── run.sh           # Production run script
+├── run-debug.sh     # Debug run script
+├── publish.sh       # Multi-platform publish script
+├── main.go          # Application entry point
+└── go.mod           # Go module definition
 ```
 
 ## License
