@@ -8,16 +8,29 @@ A Docker container for automatically creating nginx configuration based on activ
 
 ## Features
 
-- Easy server configuration with environment variables
-- Map multiple containers to different locations on same server
-- Automatic Let's Encrypt SSL certificate registration
-- Basic Authorization support
-- WebSocket support
-- Multiple virtual hosts on same container
-- Redirection support
-- Default server configuration
+- **Easy Configuration**: Server configuration with environment variables
+- **Multi-container Support**: Map multiple containers to different locations on same server
+- **SSL Automation**: Automatic Let's Encrypt SSL certificate registration and renewal
+- **Basic Authentication**: Global and path-specific basic auth support
+- **WebSocket Support**: Full WebSocket proxy support with proper headers
+- **Virtual Hosts**: Multiple virtual hosts on same container with VIRTUAL_HOST1, VIRTUAL_HOST2, etc.
+- **Redirection**: Domain redirection support with PROXY_FULL_REDIRECT
+- **Default Server**: Default server configuration for unmatched requests
+- **SSL Management**: Complete SSL certificate lifecycle management with renewal
+- **Self-signed Fallback**: Automatic self-signed certificate generation when ACME fails
+- **Manual SSL Tools**: `getssl` CLI tool for manual certificate management
+- **Debug Support**: Integrated Delve debugger for development
+- **Multi-platform**: Support for linux/amd64 and linux/arm64 architectures
+- **Development Workflow**: Optimized development scripts with hot-reloading
 
 ## Quick Setup
+
+### Docker Image
+
+The project provides two ways to run the container:
+
+1. **Development/Testing**: Use the local build
+2. **Production**: Use the published image `shinde11/nginx-proxy`
 
 ### Setup nginx-proxy-go
 
@@ -25,7 +38,19 @@ A Docker container for automatically creating nginx configuration based on activ
 # Create a network for nginx proxy
 docker network create frontend
 
-# Run the nginx-proxy-go container
+# Option 1: Use published image (recommended for production)
+docker run --network frontend \
+    --name nginx-proxy-go \
+    -v /var/run/docker.sock:/var/run/docker.sock:ro \
+    -v /etc/ssl:/etc/ssl/custom \
+    -v /etc/nginx/dhparam:/etc/nginx/dhparam \
+    -p 80:80 \
+    -p 443:443 \
+    -d --restart always \
+    shinde11/nginx-proxy
+
+# Option 2: Build and run locally (for development)
+docker build -t nginx-proxy-go .
 docker run --network frontend \
     --name nginx-proxy-go \
     -v /var/run/docker.sock:/var/run/docker.sock:ro \
@@ -150,7 +175,21 @@ docker exec nginx-proxy-go getssl www.example.com
 
 # Multiple domains
 docker exec nginx-proxy-go getssl www.example.com example.com www.example.com
+
+# With options
+docker exec nginx-proxy-go getssl --new --skip-dns-check example.com
+
+# Force renewal
+docker exec nginx-proxy-go getssl --force example.com
 ```
+
+The `getssl` command supports the following options:
+- `--skip-dns-check`: Skip DNS validation
+- `--new`: Override existing certificates
+- `--force`: Force certificate issuance without checks
+- `--api=URL`: Specify ACME API URL (default: Let's Encrypt production)
+- `--ssl-dir=DIR`: SSL certificate directory (default: /etc/ssl/custom)
+- `--challenge-dir=DIR`: ACME challenge directory (default: /tmp/acme-challenges)
 
 ### Basic Authorization
 
@@ -279,11 +318,20 @@ The development setup includes several optimizations:
 
 ### Debugging
 
-The development container includes debugging support:
+The development container includes comprehensive debugging support:
 
 - **Delve Debugger:** Port 2345 is exposed for remote debugging
 - **Debug Mode:** Set `GO_DEBUG_ENABLE=true` (default in dev mode)
 - **Live Logs:** Real-time container logs for immediate feedback
+- **Debug Configuration:** Environment variables for debug host and port
+- **Structured Logging:** JSON and text log formats with different levels
+- **Error Tracking:** Comprehensive error handling with context and retries
+
+#### Debug Environment Variables
+
+- `GO_DEBUG_ENABLE`: Enable/disable debug mode (default: false)
+- `GO_DEBUG_PORT`: Debug port for Delve (default: 2345)
+- `GO_DEBUG_HOST`: Debug host binding (default: empty for all interfaces)
 
 ### Traditional Building (Alternative)
 
@@ -335,13 +383,77 @@ nginx-proxy-go/
 ├── Dockerfile        # Multi-stage container definition
 ├── docker-compose.yml # Development environment
 ├── docker-compose-prod.yaml # Production environment
+├── docker-compose.override.yml # Local overrides
 ├── dev.sh           # Development workflow script
 ├── build.sh         # Build script
 ├── run.sh           # Production run script
 ├── run-debug.sh     # Debug run script
 ├── publish.sh       # Multi-platform publish script
+├── docker-entrypoint.sh # Container entrypoint
 ├── main.go          # Application entry point
-└── go.mod           # Go module definition
+├── go.mod           # Go module definition
+└── go.sum           # Go module checksums
+```
+
+### Key Components
+
+- **Main Application** (`main.go`): Entry point with graceful shutdown and signal handling
+- **WebServer** (`internal/webserver/`): Core nginx proxy server with Docker integration
+- **SSL Manager** (`internal/ssl/`): Complete SSL certificate lifecycle management
+- **ACME Integration** (`internal/acme/`): Let's Encrypt certificate automation
+- **Processors** (`internal/processor/`): Basic auth, redirects, default server handling
+- **Configuration** (`internal/config/`): Environment variable and configuration management
+- **Debug Support** (`internal/debug/`): Delve debugger integration
+- **CLI Tools** (`cmd/getssl/`): Manual SSL certificate management
+
+## Docker Image
+
+### Published Images
+
+The project maintains a published Docker image on Docker Hub:
+
+- **Image**: `shinde11/nginx-proxy`
+- **Tags**: `latest`, version tags (e.g., `v1.0.0`)
+- **Platforms**: linux/amd64, linux/arm64
+- **Multi-platform**: Built using Docker buildx for cross-platform compatibility
+
+### Building and Publishing
+
+The project includes a comprehensive publishing script (`publish.sh`) that supports:
+
+```bash
+# Build and publish multi-platform image
+./publish.sh
+
+# Build with specific version
+./publish.sh v1.2.3
+
+# Build only (don't push)
+./publish.sh --build-only
+
+# Single platform build (faster for testing)
+./publish.sh --single-platform
+
+# Build without cache
+./publish.sh --no-cache
+```
+
+### Local Development
+
+For local development, use the development scripts:
+
+```bash
+# Start development environment
+./dev.sh start
+
+# Quick restart
+./dev.sh quick
+
+# Rebuild code only
+./dev.sh rebuild-code
+
+# Follow logs
+./dev.sh logs
 ```
 
 ## License
