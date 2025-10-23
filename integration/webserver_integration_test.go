@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 	"github.com/rahulshinde/nginx-proxy-go/internal/processor"
 	tc "github.com/testcontainers/testcontainers-go"
@@ -86,5 +85,3 @@ func keys[T any](m map[string]T) []string {
 	}
 	return out
 }
-
-

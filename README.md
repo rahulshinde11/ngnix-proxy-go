@@ -1,5 +1,8 @@
 # Nginx-Proxy-Go
 
+[![Test and Publish](https://github.com/rahulshinde/nginx-proxy-go/actions/workflows/test-and-publish.yml/badge.svg)](https://github.com/rahulshinde/nginx-proxy-go/actions/workflows/test-and-publish.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rahulshinde/nginx-proxy-go)](https://goreportcard.com/report/github.com/rahulshinde/nginx-proxy-go)
+
 A Docker container for automatically creating nginx configuration based on active containers in docker host, written in Go.
 
 ## ⚠️ Development Warning
@@ -216,6 +219,135 @@ By default, requests to unregistered server names return a 503 error. To forward
 Note: The default server configuration is controlled by the `DEFAULT_HOST` environment variable (default: true).
 
 For HTTPS connections, consider setting up wildcard certificates to avoid SSL certificate errors.
+
+## Testing
+
+The project includes comprehensive test suites to ensure reliability and correctness.
+
+### Test Categories
+
+1. **Unit Tests** - Test individual components and functions
+2. **Integration Tests** - Test Docker integration and container processing
+3. **End-to-End Tests** - Test complete workflows with real containers
+
+### Running Tests
+
+The project includes a convenient `test.sh` script for running different test suites:
+
+```bash
+# Run all tests
+./test.sh all
+
+# Run specific test suites
+./test.sh unit          # Unit tests only
+./test.sh integration   # Integration tests
+./test.sh e2e           # End-to-end tests
+./test.sh http          # HTTP routing tests
+./test.sh https         # HTTPS tests
+./test.sh websocket     # WebSocket tests
+./test.sh auth          # Basic auth tests
+./test.sh redirect      # Redirect tests
+./test.sh multi         # Multi-container tests
+
+# Generate coverage report
+./test.sh coverage
+
+# Clean up test artifacts
+./test.sh clean
+```
+
+#### Unit Tests
+
+Run unit tests for all internal packages:
+
+```bash
+go test ./...
+```
+
+With coverage:
+
+```bash
+go test -v -race -coverprofile=coverage.txt -covermode=atomic ./internal/...
+```
+
+#### Integration Tests
+
+Integration tests require Docker to be running:
+
+```bash
+go test -tags=integration ./integration/...
+```
+
+#### End-to-End Tests
+
+E2E tests create real containers and test the complete proxy functionality:
+
+```bash
+# Build the test image first
+docker build -t nginx-proxy-go:test .
+
+# Create test network
+docker network create nginx-proxy || true
+
+# Run E2E tests
+go test -v -tags=e2e -timeout 15m ./integration/e2e/...
+```
+
+Run specific E2E test suites:
+
+```bash
+# HTTP routing tests
+go test -v -tags=e2e ./integration/e2e/ -run TestBasicVirtualHostRouting
+
+# HTTPS tests
+go test -v -tags=e2e ./integration/e2e/ -run TestHTTPS
+
+# WebSocket tests
+go test -v -tags=e2e ./integration/e2e/ -run TestWebSocket
+
+# Basic auth tests
+go test -v -tags=e2e ./integration/e2e/ -run TestBasicAuth
+
+# Redirect tests
+go test -v -tags=e2e ./integration/e2e/ -run TestRedirect
+
+# Multi-container tests
+go test -v -tags=e2e ./integration/e2e/ -run TestMultiple
+```
+
+#### Run All Tests
+
+```bash
+# Run all tests including integration and e2e
+go test -tags=integration,e2e ./...
+```
+
+### Test Coverage
+
+The test suite covers:
+
+- ✅ **HTTP Routing**: Virtual hosts, path routing, host headers, port mapping
+- ✅ **HTTPS**: SSL certificates, HTTP to HTTPS redirects, SNI support
+- ✅ **WebSocket**: WebSocket upgrades, bidirectional communication, secure WebSocket
+- ✅ **Basic Authentication**: Global and path-specific auth, HTTPS enforcement
+- ✅ **Domain Redirects**: Simple and multiple source redirects, path preservation
+- ✅ **Multi-Container**: Multiple virtual hosts, container lifecycle, load balancing
+- ✅ **Container Events**: Start, stop, restart, network connect/disconnect
+
+### Continuous Integration
+
+All tests run automatically on:
+- Every push to `main`, `develop`, and `tests` branches
+- All pull requests to `main` and `develop`
+
+The CI pipeline:
+1. Runs unit tests with race detection
+2. Runs integration tests
+3. Builds Docker image
+4. Runs end-to-end tests
+5. Publishes Docker image (on main branch only)
+
+View test results and coverage in [GitHub Actions](https://github.com/rahulshinde/nginx-proxy-go/actions).
 
 ## Development
 
