@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/rahulshinde/nginx-proxy-go/internal/config"
 	"github.com/rahulshinde/nginx-proxy-go/internal/debug"
+	"github.com/rahulshinde/nginx-proxy-go/internal/dockerapi"
 	"github.com/rahulshinde/nginx-proxy-go/internal/webserver"
 )
 
@@ -32,7 +33,7 @@ func main() {
 	cfg := config.NewConfig()
 
 	// Create web server instance
-	server, err := webserver.NewWebServer(cli, cfg)
+	server, err := webserver.NewWebServer(dockerapi.New(cli), cfg, nil)
 	if err != nil {
 		log.Fatalf("Failed to create web server: %v", err)
 	}

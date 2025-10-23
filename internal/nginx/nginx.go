@@ -3,7 +3,6 @@ package nginx
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -14,6 +13,7 @@ type Nginx struct {
 	confFile     string
 	challengeDir string
 	lastConfig   string
+	cmdr         Commander
 }
 
 // NginxConfig represents the configuration for nginx.
@@ -22,10 +22,14 @@ type NginxConfig struct {
 }
 
 // NewNginx creates a new Nginx instance
-func NewNginx(confFile, challengeDir string) *Nginx {
+func NewNginx(confFile, challengeDir string, cmdr Commander) *Nginx {
+	if cmdr == nil {
+		cmdr = DefaultCommander
+	}
 	return &Nginx{
 		confFile:     confFile,
 		challengeDir: challengeDir,
+		cmdr:         cmdr,
 	}
 }
 
@@ -70,7 +74,7 @@ func (n *Nginx) ForceStart(config string) bool {
 	}
 
 	// Start nginx
-	cmd := exec.Command("nginx", "-g", "daemon off;")
+	cmd := n.cmdr.Command("nginx", "-g", "daemon off;")
 	if err := cmd.Start(); err != nil {
 		return false
 	}
@@ -81,7 +85,7 @@ func (n *Nginx) ForceStart(config string) bool {
 
 // configTest tests the nginx configuration
 func (n *Nginx) configTest() error {
-	cmd := exec.Command("nginx", "-t")
+	cmd := n.cmdr.Command("nginx", "-t")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("nginx config test failed: %s", string(output))
@@ -91,7 +95,7 @@ func (n *Nginx) configTest() error {
 
 // reload reloads the nginx configuration
 func (n *Nginx) reload() error {
-	cmd := exec.Command("nginx", "-s", "reload")
+	cmd := n.cmdr.Command("nginx", "-s", "reload")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to reload nginx: %s", string(output))

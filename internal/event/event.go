@@ -8,7 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/client"
+	"github.com/rahulshinde/nginx-proxy-go/internal/dockerapi"
 )
 
 // EventType represents the type of Docker event
@@ -29,7 +29,7 @@ type EventHandler interface {
 
 // Processor handles Docker events with enhanced functionality
 type Processor struct {
-	client    *client.Client
+	client    dockerapi.Client
 	handler   EventHandler
 	mu        sync.RWMutex
 	ctx       context.Context
@@ -39,7 +39,7 @@ type Processor struct {
 }
 
 // NewProcessor creates a new event processor
-func NewProcessor(client *client.Client, handler EventHandler) *Processor {
+func NewProcessor(client dockerapi.Client, handler EventHandler) *Processor {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Processor{
 		client:    client,
@@ -159,5 +159,5 @@ func GetEventScope(event events.Message) string {
 
 // GetEventAction returns the event action
 func GetEventAction(event events.Message) string {
-	return event.Action
+	return string(event.Action)
 }

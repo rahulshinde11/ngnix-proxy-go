@@ -243,6 +243,18 @@ docker network create nginx-proxy
 
 The `dev.sh` script provides optimized commands for different development scenarios:
 
+#### **Run Tests:**
+
+```bash
+go test ./...
+```
+
+To include Docker-backed integration tests (requires Docker socket access):
+
+```bash
+go test -tags=integration ./...
+```
+
 #### **For Active Development (Stay in Terminal):**
 ```bash
 # Initial setup - builds everything, shows logs

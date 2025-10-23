@@ -14,11 +14,12 @@ import (
 	"encoding/pem"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/client"
 	"github.com/rahulshinde/nginx-proxy-go/internal/acme"
 	"github.com/rahulshinde/nginx-proxy-go/internal/config"
-	"github.com/rahulshinde/nginx-proxy-go/internal/container"
+	appcontainer "github.com/rahulshinde/nginx-proxy-go/internal/container"
+	"github.com/rahulshinde/nginx-proxy-go/internal/dockerapi"
 	"github.com/rahulshinde/nginx-proxy-go/internal/errors"
 	"github.com/rahulshinde/nginx-proxy-go/internal/event"
 	"github.com/rahulshinde/nginx-proxy-go/internal/host"
@@ -30,11 +31,11 @@ import (
 
 // WebServer represents the main nginx proxy server
 type WebServer struct {
-	client                 *client.Client
+	dockerClient           dockerapi.Client
 	config                 *config.Config
 	nginx                  *nginx.Nginx
 	hosts                  map[string]map[int]*host.Host
-	containers             map[string]*container.Container
+	containers             map[string]*appcontainer.Container
 	networks               map[string]string
 	mu                     sync.RWMutex
 	template               *nginx.Template
@@ -47,7 +48,7 @@ type WebServer struct {
 }
 
 // NewWebServer creates a new WebServer instance
-func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error) {
+func NewWebServer(dockerClient dockerapi.Client, cfg *config.Config, nginxInstance *nginx.Nginx) (*WebServer, error) {
 	// Initialize logger
 	logCfg := logger.DefaultConfig()
 	logCfg.OutputPath = filepath.Join(cfg.ConfDir, "logs", "nginx-proxy.log")
@@ -67,10 +68,10 @@ func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error)
 	certManager := ssl.NewCertificateManager("/etc/ssl/custom", acmeManager, logger)
 
 	ws := &WebServer{
-		client:                 client,
+		dockerClient:           dockerClient,
 		config:                 cfg,
 		hosts:                  make(map[string]map[int]*host.Host),
-		containers:             make(map[string]*container.Container),
+		containers:             make(map[string]*appcontainer.Container),
 		networks:               make(map[string]string),
 		basicAuthProcessor:     processor.NewBasicAuthProcessor(filepath.Join(cfg.ConfDir, "basic_auth")),
 		redirectProcessor:      processor.NewRedirectProcessor(logger),
@@ -81,7 +82,11 @@ func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error)
 
 	// Initialize nginx
 	confFile := filepath.Join(cfg.ConfDir, "conf.d", "default.conf")
-	ws.nginx = nginx.NewNginx(confFile, cfg.ChallengeDir)
+	if nginxInstance != nil {
+		ws.nginx = nginxInstance
+	} else {
+		ws.nginx = nginx.NewNginx(confFile, cfg.ChallengeDir, nil)
+	}
 
 	// Load template
 	tmpl, err := ws.loadTemplate()
@@ -96,7 +101,7 @@ func NewWebServer(client *client.Client, cfg *config.Config) (*WebServer, error)
 	}
 
 	// Initialize event processor
-	ws.eventProcessor = event.NewProcessor(client, ws)
+	ws.eventProcessor = event.NewProcessor(dockerClient, ws)
 
 	ws.log.Info("WebServer initialized successfully")
 	return ws, nil
@@ -227,13 +232,13 @@ func (ws *WebServer) HandleServiceEvent(ctx context.Context, event events.Messag
 func (ws *WebServer) handleContainerStart(event events.Message) error {
 	ws.log.Debug("Processing container start event: %s", event.ID)
 
-	containerInfo, err := ws.client.ContainerInspect(context.Background(), event.ID)
+	containerInfo, err := ws.dockerClient.ContainerInspect(context.Background(), event.ID)
 	if err != nil {
 		return errors.New(errors.ErrorTypeDocker, "failed to inspect container", err).
 			WithContext("container_id", event.ID)
 	}
 
-	ws.containers[event.ID] = container.NewContainer(containerInfo)
+	ws.containers[event.ID] = appcontainer.NewContainer(containerInfo)
 	ws.log.Info("Container started: %s", event.ID)
 	return ws.updateContainerLocked(event.ID)
 }
@@ -279,7 +284,7 @@ func (ws *WebServer) handleNetworkConnect(event events.Message) error {
 
 	if containerID == ws.getSelfID() {
 		networkID := event.Actor.ID
-		network, err := ws.client.NetworkInspect(context.Background(), networkID, types.NetworkInspectOptions{})
+		network, err := ws.dockerClient.NetworkInspect(context.Background(), networkID, types.NetworkInspectOptions{})
 		if err != nil {
 			return errors.New(errors.ErrorTypeNetwork, "failed to inspect network", err).
 				WithContext("network_id", networkID)
@@ -352,14 +357,14 @@ func (ws *WebServer) learnYourself() error {
 		return errors.New(errors.ErrorTypeSystem, "HOSTNAME environment variable not set", nil)
 	}
 
-	container, err := ws.client.ContainerInspect(context.Background(), hostname)
+	container, err := ws.dockerClient.ContainerInspect(context.Background(), hostname)
 	if err != nil {
 		ws.log.Error("[ERROR] Couldn't determine container ID of this container: %v", err)
 		ws.log.Error("Is it running in docker environment?")
 		ws.log.Info("Falling back to default network")
 
 		// Fallback to default network
-		network, err := ws.client.NetworkInspect(context.Background(), "frontend", types.NetworkInspectOptions{})
+		network, err := ws.dockerClient.NetworkInspect(context.Background(), "frontend", types.NetworkInspectOptions{})
 		if err == nil {
 			ws.networks[network.ID] = "frontend"
 			ws.networks["frontend"] = network.ID
@@ -370,7 +375,7 @@ func (ws *WebServer) learnYourself() error {
 	// Learn about networks
 	for networkName, network := range container.NetworkSettings.Networks {
 		fmt.Printf("Check known network:  %s\n", networkName)
-		netDetail, err := ws.client.NetworkInspect(context.Background(), network.NetworkID, types.NetworkInspectOptions{})
+		netDetail, err := ws.dockerClient.NetworkInspect(context.Background(), network.NetworkID, types.NetworkInspectOptions{})
 		if err == nil {
 			ws.networks[netDetail.ID] = netDetail.Name
 			ws.networks[netDetail.Name] = netDetail.ID
@@ -390,24 +395,24 @@ func (ws *WebServer) rescanAllContainers() error {
 	ws.log.Debug("Starting container rescan...")
 
 	// Get all running containers
-	containers, err := ws.client.ContainerList(context.Background(), types.ContainerListOptions{})
+	containers, err := ws.dockerClient.ContainerList(context.Background(), container.ListOptions{})
 	if err != nil {
 		return errors.New(errors.ErrorTypeDocker, "failed to list containers", err)
 	}
 
 	// Clear existing containers and hosts
-	ws.containers = make(map[string]*container.Container)
+	ws.containers = make(map[string]*appcontainer.Container)
 	ws.hosts = make(map[string]map[int]*host.Host)
 
 	// Add all containers and process their virtual hosts
 	for _, c := range containers {
-		containerJSON, err := ws.client.ContainerInspect(context.Background(), c.ID)
+		containerJSON, err := ws.dockerClient.ContainerInspect(context.Background(), c.ID)
 		if err != nil {
 			ws.log.Error("Failed to inspect container %s: %v", c.ID, err)
 			continue
 		}
 
-		info := container.NewContainer(containerJSON)
+		info := appcontainer.NewContainer(containerJSON)
 		ws.containers[c.ID] = info
 
 		// Get container environment variables
@@ -600,7 +605,7 @@ func (ws *WebServer) updateContainer(containerID string) error {
 	ws.log.Debug("Updating container configuration: %s", containerID)
 
 	// Get container info
-	container, err := ws.client.ContainerInspect(context.Background(), containerID)
+	container, err := ws.dockerClient.ContainerInspect(context.Background(), containerID)
 	if err != nil {
 		ws.log.Error("Failed to inspect container %s: %v", containerID, err)
 		return errors.New(errors.ErrorTypeDocker, "failed to inspect container", err).
@@ -663,7 +668,7 @@ func (ws *WebServer) updateContainerLocked(containerID string) error {
 	ws.removeContainerFromHosts(containerID)
 
 	// Get container info
-	container, err := ws.client.ContainerInspect(context.Background(), containerID)
+	container, err := ws.dockerClient.ContainerInspect(context.Background(), containerID)
 	if err != nil {
 		ws.log.Error("Failed to inspect container %s: %v", containerID, err)
 		return errors.New(errors.ErrorTypeDocker, "failed to inspect container", err).

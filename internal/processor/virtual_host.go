@@ -8,21 +8,20 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
-
 	"github.com/rahulshinde/nginx-proxy-go/internal/container"
+	"github.com/rahulshinde/nginx-proxy-go/internal/dockerapi"
 	"github.com/rahulshinde/nginx-proxy-go/internal/host"
 )
 
 // VirtualHostProcessor handles virtual host configuration
 type VirtualHostProcessor struct {
-	dockerClient *client.Client
+	dockerClient dockerapi.Client
 	knownNets    []string
 	ctx          context.Context
 }
 
 // NewVirtualHostProcessor creates a new VirtualHostProcessor
-func NewVirtualHostProcessor(dockerClient *client.Client, knownNets []string) *VirtualHostProcessor {
+func NewVirtualHostProcessor(dockerClient dockerapi.Client, knownNets []string) *VirtualHostProcessor {
 	return &VirtualHostProcessor{
 		dockerClient: dockerClient,
 		knownNets:    knownNets,
