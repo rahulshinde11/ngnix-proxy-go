@@ -32,6 +32,11 @@ func main() {
 	// Load configuration
 	cfg := config.NewConfig()
 
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Configuration validation failed: %v", err)
+	}
+
 	// Create web server instance
 	server, err := webserver.NewWebServer(dockerapi.New(cli), cfg, nil)
 	if err != nil {

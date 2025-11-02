@@ -2,7 +2,10 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/rahulshinde/nginx-proxy-go/internal/constants"
 )
 
 func TestNewConfigDefaults(t *testing.T) {
@@ -106,5 +109,144 @@ func clearEnv(t *testing.T) {
 	}
 	for _, k := range keys {
 		os.Unsetenv(k)
+	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupFunc  func() *Config
+		wantError  bool
+		errorField string
+	}{
+		{
+			name: "valid config with temp directories",
+			setupFunc: func() *Config {
+				tmpDir := t.TempDir()
+				return &Config{
+					ConfDir:           filepath.Join(tmpDir, "nginx") + "/",
+					ChallengeDir:      filepath.Join(tmpDir, "challenges") + "/",
+					SSLDir:            filepath.Join(tmpDir, "ssl") + "/",
+					ClientMaxBodySize: "1m",
+					DebugPort:         2345,
+				}
+			},
+			wantError: false,
+		},
+		{
+			name: "invalid debug port - too low",
+			setupFunc: func() *Config {
+				tmpDir := t.TempDir()
+				return &Config{
+					ConfDir:           filepath.Join(tmpDir, "nginx") + "/",
+					ChallengeDir:      filepath.Join(tmpDir, "challenges") + "/",
+					SSLDir:            filepath.Join(tmpDir, "ssl") + "/",
+					ClientMaxBodySize: "1m",
+					DebugPort:         0,
+				}
+			},
+			wantError:  true,
+			errorField: "DebugPort",
+		},
+		{
+			name: "invalid debug port - too high",
+			setupFunc: func() *Config {
+				tmpDir := t.TempDir()
+				return &Config{
+					ConfDir:           filepath.Join(tmpDir, "nginx") + "/",
+					ChallengeDir:      filepath.Join(tmpDir, "challenges") + "/",
+					SSLDir:            filepath.Join(tmpDir, "ssl") + "/",
+					ClientMaxBodySize: "1m",
+					DebugPort:         70000,
+				}
+			},
+			wantError:  true,
+			errorField: "DebugPort",
+		},
+		{
+			name: "empty client max body size",
+			setupFunc: func() *Config {
+				tmpDir := t.TempDir()
+				return &Config{
+					ConfDir:           filepath.Join(tmpDir, "nginx") + "/",
+					ChallengeDir:      filepath.Join(tmpDir, "challenges") + "/",
+					SSLDir:            filepath.Join(tmpDir, "ssl") + "/",
+					ClientMaxBodySize: "",
+					DebugPort:         2345,
+				}
+			},
+			wantError:  true,
+			errorField: "ClientMaxBodySize",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.setupFunc()
+			err := cfg.Validate()
+
+			if tt.wantError {
+				if err == nil {
+					t.Error("expected validation error, got nil")
+				} else if validationErr, ok := err.(*ValidationError); ok {
+					if validationErr.Field != tt.errorField {
+						t.Errorf("expected error field %s, got %s", tt.errorField, validationErr.Field)
+					}
+				} else {
+					t.Errorf("expected ValidationError, got %T", err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected validation error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateDirectory(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupFunc func() string
+		wantError bool
+	}{
+		{
+			name: "existing writable directory",
+			setupFunc: func() string {
+				return t.TempDir()
+			},
+			wantError: false,
+		},
+		{
+			name: "non-existing directory that can be created",
+			setupFunc: func() string {
+				tmpDir := t.TempDir()
+				return filepath.Join(tmpDir, "new_dir")
+			},
+			wantError: false,
+		},
+		{
+			name: "path is a file not directory",
+			setupFunc: func() string {
+				tmpDir := t.TempDir()
+				filePath := filepath.Join(tmpDir, "file.txt")
+				os.WriteFile(filePath, []byte("test"), constants.ConfigFilePermissions)
+				return filePath
+			},
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := tt.setupFunc()
+			err := validateDirectory(path)
+
+			if tt.wantError && err == nil {
+				t.Error("expected error, got nil")
+			} else if !tt.wantError && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }

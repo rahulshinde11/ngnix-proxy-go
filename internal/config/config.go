@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/rahulshinde/nginx-proxy-go/internal/constants"
 )
 
 // Config represents the application configuration
@@ -26,6 +28,16 @@ type Config struct {
 	DebugHost    string
 }
 
+// ValidationError represents a configuration validation error
+type ValidationError struct {
+	Field   string
+	Message string
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("config validation failed for %s: %s", e.Field, e.Message)
+}
+
 // NewConfig creates a new Config instance with values from environment variables
 func NewConfig() *Config {
 	cfg := &Config{
@@ -33,7 +45,7 @@ func NewConfig() *Config {
 		ConfDir:           getEnv("NGINX_CONF_DIR", "./nginx"),
 		ChallengeDir:      getEnv("CHALLENGE_DIR", "./acme-challenges"),
 		SSLDir:            getEnv("SSL_DIR", "./ssl"),
-		ClientMaxBodySize: getEnv("CLIENT_MAX_BODY_SIZE", "1m"),
+		ClientMaxBodySize: getEnv("CLIENT_MAX_BODY_SIZE", constants.DefaultClientMaxBodySize),
 		DefaultServer:     getEnvBool("DEFAULT_HOST", true),
 
 		// Basic auth configuration
@@ -42,7 +54,7 @@ func NewConfig() *Config {
 
 		// Debug configuration
 		DebugEnabled: getEnvBool("GO_DEBUG_ENABLE", false),
-		DebugPort:    getEnvInt("GO_DEBUG_PORT", 2345),
+		DebugPort:    getEnvInt("GO_DEBUG_PORT", constants.DefaultDebugPort),
 		DebugHost:    getEnv("GO_DEBUG_HOST", ""),
 	}
 
@@ -52,6 +64,76 @@ func NewConfig() *Config {
 	cfg.SSLDir = ensureTrailingSlash(cfg.SSLDir)
 
 	return cfg
+}
+
+// Validate validates the configuration and returns an error if invalid
+func (c *Config) Validate() error {
+	// Validate debug port
+	if c.DebugPort < constants.MinValidPort || c.DebugPort > constants.MaxValidPort {
+		return &ValidationError{
+			Field:   "DebugPort",
+			Message: fmt.Sprintf("must be between %d and %d, got %d", constants.MinValidPort, constants.MaxValidPort, c.DebugPort),
+		}
+	}
+
+	// Validate directories exist or can be created
+	dirs := map[string]string{
+		"ConfDir":      c.ConfDir,
+		"ChallengeDir": c.ChallengeDir,
+		"SSLDir":       c.SSLDir,
+	}
+
+	for name, dir := range dirs {
+		if err := validateDirectory(dir); err != nil {
+			return &ValidationError{
+				Field:   name,
+				Message: fmt.Sprintf("invalid directory: %v", err),
+			}
+		}
+	}
+
+	// Validate ClientMaxBodySize format (basic check)
+	if c.ClientMaxBodySize == "" {
+		return &ValidationError{
+			Field:   "ClientMaxBodySize",
+			Message: "cannot be empty",
+		}
+	}
+
+	return nil
+}
+
+// validateDirectory checks if a directory exists or can be created
+func validateDirectory(dir string) error {
+	// Remove trailing slash for stat
+	dir = strings.TrimSuffix(dir, "/")
+	
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Try to create the directory
+			if err := os.MkdirAll(dir, constants.DirPermissions); err != nil {
+				return fmt.Errorf("cannot create directory: %w", err)
+			}
+			return nil
+		}
+		return fmt.Errorf("cannot access directory: %w", err)
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("path exists but is not a directory")
+	}
+
+	// Check if directory is writable by trying to create a temp file
+	testFile := filepath.Join(dir, ".write_test")
+	f, err := os.Create(testFile)
+	if err != nil {
+		return fmt.Errorf("directory is not writable: %w", err)
+	}
+	f.Close()
+	os.Remove(testFile)
+
+	return nil
 }
 
 // getEnv gets an environment variable or returns a default value

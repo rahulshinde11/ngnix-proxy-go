@@ -9,6 +9,9 @@ import (
 	"github.com/docker/docker/client"
 )
 
+// ListOptions is an alias for container.ListOptions
+type ListOptions = container.ListOptions
+
 // Client exposes the Docker operations required by the application.
 type Client interface {
 	ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
