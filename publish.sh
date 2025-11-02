@@ -78,18 +78,24 @@ get_version_tag() {
 # Function to build the image (single platform - for build-only mode)
 build_image_single() {
     local version_tag=$1
-    
+
     log_info "Building Docker image (single platform)..."
     log_info "Version tag: $version_tag"
-    
+
     # Build the image with version tag
     docker build -t $BUILD_IMAGE_NAME .
     docker tag $BUILD_IMAGE_NAME $IMAGE_NAME:$version_tag
-    docker tag $BUILD_IMAGE_NAME $IMAGE_NAME:latest
-    
+
+    if [ "$NO_LATEST" != "true" ]; then
+        docker tag $BUILD_IMAGE_NAME $IMAGE_NAME:latest
+    fi
+
     log_success "Docker image built successfully"
     log_info "Tagged as: $IMAGE_NAME:$version_tag"
-    log_info "Tagged as: $IMAGE_NAME:latest"
+
+    if [ "$NO_LATEST" != "true" ]; then
+        log_info "Tagged as: $IMAGE_NAME:latest"
+    fi
 }
 
 # Function to build multi-platform image
@@ -110,7 +116,11 @@ build_image_multiplatform() {
     fi
     
     # Add tags
-    buildx_cmd="$buildx_cmd -t $IMAGE_NAME:$version_tag -t $IMAGE_NAME:latest"
+    buildx_cmd="$buildx_cmd -t $IMAGE_NAME:$version_tag"
+
+    if [ "$NO_LATEST" != "true" ]; then
+        buildx_cmd="$buildx_cmd -t $IMAGE_NAME:latest"
+    fi
     
     # Add push flag if needed
     if [ "$push_flag" = "true" ]; then
@@ -135,23 +145,28 @@ build_image_multiplatform() {
     fi
     
     log_info "Tagged as: $IMAGE_NAME:$version_tag"
-    log_info "Tagged as: $IMAGE_NAME:latest"
+
+    if [ "$NO_LATEST" != "true" ]; then
+        log_info "Tagged as: $IMAGE_NAME:latest"
+    fi
 }
 
 # Function to push single-platform image (fallback)
 push_image() {
     local version_tag=$1
-    
+
     log_info "Pushing Docker image to Docker Hub..."
-    
+
     # Push version tag
     log_info "Pushing $IMAGE_NAME:$version_tag..."
     docker push $IMAGE_NAME:$version_tag
-    
-    # Push latest tag
-    log_info "Pushing $IMAGE_NAME:latest..."
-    docker push $IMAGE_NAME:latest
-    
+
+    # Push latest tag (only if not skipped)
+    if [ "$NO_LATEST" != "true" ]; then
+        log_info "Pushing $IMAGE_NAME:latest..."
+        docker push $IMAGE_NAME:latest
+    fi
+
     log_success "Docker image pushed successfully"
     log_success "Available at: https://hub.docker.com/r/$IMAGE_NAME"
 }
@@ -177,6 +192,7 @@ show_usage() {
     echo "  --no-cache           Build without using cache"
     echo "  --build-only         Only build, don't push to Docker Hub"
     echo "  --single-platform    Build only for current platform (faster for testing)"
+    echo "  --no-latest          Don't tag as latest (only use version tag)"
     echo ""
     echo "Arguments:"
     echo "  VERSION_TAG          Optional version tag (default: auto-generated from git tag or timestamp)"
@@ -187,6 +203,7 @@ show_usage() {
     echo "  $0 --build-only         # Only build multi-platform, don't push"
     echo "  $0 --single-platform    # Build and push single platform (current architecture)"
     echo "  $0 -c v1.2.3            # Build, push, and cleanup"
+    echo "  $0 --no-latest v1.2.3   # Build and push with specific version, don't tag as latest"
 }
 
 # Parse command line arguments
@@ -194,6 +211,7 @@ CLEANUP=false
 NO_CACHE=false
 BUILD_ONLY=false
 SINGLE_PLATFORM=false
+NO_LATEST=false
 VERSION_TAG=""
 
 while [[ $# -gt 0 ]]; do
@@ -216,6 +234,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --single-platform)
             SINGLE_PLATFORM=true
+            shift
+            ;;
+        --no-latest)
+            NO_LATEST=true
             shift
             ;;
         -*)
@@ -263,7 +285,11 @@ main() {
             log_info "Building without cache..."
             docker build --no-cache -t $BUILD_IMAGE_NAME .
             docker tag $BUILD_IMAGE_NAME $IMAGE_NAME:$VERSION_TAG
-            docker tag $BUILD_IMAGE_NAME $IMAGE_NAME:latest
+
+            if [ "$NO_LATEST" != "true" ]; then
+                docker tag $BUILD_IMAGE_NAME $IMAGE_NAME:latest
+            fi
+
             log_success "Docker image built successfully (no cache)"
         else
             build_image_single "$VERSION_TAG"
@@ -298,7 +324,11 @@ main() {
     if [ "$BUILD_ONLY" != "true" ]; then
         log_info "You can now use the image with:"
         log_info "  docker run $IMAGE_NAME:$VERSION_TAG"
-        log_info "  docker run $IMAGE_NAME:latest"
+
+        if [ "$NO_LATEST" != "true" ]; then
+            log_info "  docker run $IMAGE_NAME:latest"
+        fi
+
         if [ "$SINGLE_PLATFORM" != "true" ]; then
             log_info "Multi-platform image supports: linux/amd64, linux/arm64"
         fi

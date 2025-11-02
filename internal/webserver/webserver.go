@@ -136,6 +136,11 @@ func (ws *WebServer) Start(ctx context.Context) error {
 	// Check if nginx is alive
 	fmt.Printf("Nginx is alive\n")
 
+	// Ensure default SSL certificate exists for catch-all HTTPS server
+	if err := ws.ensureDefaultCertificate(); err != nil {
+		ws.log.Warn("Failed to create default SSL certificate: %v", err)
+	}
+
 	// Initial container scan
 	if err := ws.rescanAllContainers(); err != nil {
 		return errors.New(errors.ErrorTypeContainer, "failed to scan containers", err)
@@ -246,9 +251,20 @@ func (ws *WebServer) handleContainerStart(event events.Message) error {
 // handleContainerDie processes container die events
 func (ws *WebServer) handleContainerDie(event events.Message) error {
 	ws.log.Debug("Processing container die event: %s", event.Actor.ID)
+
+	// Remove from containers map first to prevent race conditions
 	delete(ws.containers, event.Actor.ID)
-	ws.log.Info("Container died: %s", event.Actor.ID)
-	return ws.removeContainer(event.Actor.ID)
+
+	// Remove from hosts and reload nginx
+	removed := ws.removeContainerFromHosts(event.Actor.ID)
+
+	ws.log.Info("Container died: %s (removed from hosts: %v)", event.Actor.ID, removed)
+
+	// Only reload if we actually removed something
+	if removed {
+		return ws.reload()
+	}
+	return nil
 }
 
 // handleContainerStop processes container stop events
@@ -346,6 +362,42 @@ func (ws *WebServer) handleServiceUpdate(event events.Message) error {
 func (ws *WebServer) handleServiceRemove(event events.Message) error {
 	// Handle service removal
 	log.Printf("Service removed: %s", event.Actor.ID)
+	return nil
+}
+
+// ensureDefaultCertificate ensures a default self-signed SSL certificate exists
+// This is used by the default_server block for HTTPS to handle unmatched hosts
+func (ws *WebServer) ensureDefaultCertificate() error {
+	certPath := filepath.Join("/etc/ssl/custom/certs", "default.crt")
+	keyPath := filepath.Join("/etc/ssl/custom/private", "default.key")
+
+	// Check if certificate already exists
+	if _, err := os.Stat(certPath); err == nil {
+		if _, err := os.Stat(keyPath); err == nil {
+			ws.log.Info("Default SSL certificate already exists")
+			return nil
+		}
+	}
+
+	// Generate self-signed certificate for "_" (catch-all)
+	ws.log.Info("Generating default self-signed SSL certificate...")
+	if _, err := ws.certificateManager.GetCertificate("_"); err != nil {
+		return errors.New(errors.ErrorTypeSSL, "failed to generate default certificate", err)
+	}
+
+	// Rename the generated certificate to "default"
+	srcCert := filepath.Join("/etc/ssl/custom/certs", "_.selfsigned.crt")
+	srcKey := filepath.Join("/etc/ssl/custom/private", "_.selfsigned.key")
+
+	if err := os.Rename(srcCert, certPath); err != nil {
+		return errors.New(errors.ErrorTypeSSL, "failed to rename default certificate", err)
+	}
+
+	if err := os.Rename(srcKey, keyPath); err != nil {
+		return errors.New(errors.ErrorTypeSSL, "failed to rename default key", err)
+	}
+
+	ws.log.Info("Default SSL certificate created successfully")
 	return nil
 }
 
@@ -950,7 +1002,7 @@ func (ws *WebServer) addHost(h *host.Host) {
 
 		// Update host extras - handle injected configs specially
 		ws.mergeExtras(existingHost.Extras, h.Extras)
-		
+
 		// CRITICAL: Rebuild upstreams from locations to ensure correct mapping
 		ws.rebuildHostUpstreams(existingHost)
 
@@ -970,7 +1022,7 @@ func (ws *WebServer) addHost(h *host.Host) {
 func (ws *WebServer) rebuildHostUpstreams(h *host.Host) {
 	// Clear existing upstreams
 	h.Upstreams = make([]*host.Upstream, 0)
-	
+
 	// For each location, create an upstream if it has multiple containers
 	for path, location := range h.Locations {
 		if len(location.Containers) > 1 {
@@ -980,21 +1032,21 @@ func (ws *WebServer) rebuildHostUpstreams(h *host.Host) {
 				sanitizedPath = "root"
 			}
 			upstreamID := fmt.Sprintf("%s-%d-%s", h.Hostname, h.Port, sanitizedPath)
-			
+
 			// Set the upstream ID in the location
 			location.Upstream = upstreamID
 			location.UpstreamEnabled = true
-			
+
 			// Collect all containers for this location
 			containers := make([]*host.Container, 0, len(location.Containers))
 			for _, container := range location.Containers {
 				containers = append(containers, container)
 			}
-			
+
 			// Add the upstream
 			h.AddUpstream(upstreamID, containers)
-			
-			ws.log.Debug("Created upstream %s with %d containers for location %s on host %s:%d", 
+
+			ws.log.Debug("Created upstream %s with %d containers for location %s on host %s:%d",
 				upstreamID, len(containers), path, h.Hostname, h.Port)
 		} else if len(location.Containers) == 1 {
 			// Single container - disable upstream, use direct proxy

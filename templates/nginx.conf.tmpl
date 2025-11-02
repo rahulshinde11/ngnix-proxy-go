@@ -25,6 +25,10 @@ map $scheme $proxy_x_forwarded_ssl {
 
 proxy_cache off;
 proxy_request_buffering off;
+proxy_connect_timeout 10s;
+proxy_send_timeout 60s;
+proxy_read_timeout 60s;
+proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;
 
 client_max_body_size {{ .Config.ClientMaxBodySize }};
 
@@ -32,7 +36,7 @@ client_max_body_size {{ .Config.ClientMaxBodySize }};
 {{ range $upstream := $host.Upstreams }}
 upstream {{ $upstream.ID }} {
     {{ range $container := $upstream.Containers }}
-    server {{ $container.Address }}:{{ $container.Port }};
+    server {{ $container.Address }}:{{ $container.Port }} max_fails=3 fail_timeout=30s;
     {{ end }}
 }
 {{ end }}
@@ -64,6 +68,7 @@ server {
         {{ end }}
         {{ if $location.UpstreamEnabled }}
         proxy_pass {{ $location.Scheme }}://{{ $location.Upstream }}{{ $location.ContainerPath }};
+        proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;
         {{ else }}
         proxy_pass {{ $location.Scheme }}://{{ $location.ContainerAddress }}:{{ $location.ContainerPort }}{{ $location.ContainerPath }};
         {{ end }}
@@ -111,6 +116,7 @@ server {
         {{ end }}
         {{ if $location.UpstreamEnabled }}
         proxy_pass {{ $location.Scheme }}://{{ $location.Upstream }}{{ $location.ContainerPath }};
+        proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;
         {{ else }}
         proxy_pass {{ $location.Scheme }}://{{ $location.ContainerAddress }}:{{ $location.ContainerPort }}{{ $location.ContainerPath }};
         {{ end }}
@@ -176,6 +182,17 @@ server {
         alias {{ .Config.ChallengeDir }};
         try_files $uri =404;
     }
+    location / {
+        return 503;
+    }
+}
+
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name _;
+    ssl_certificate /etc/ssl/custom/certs/default.crt;
+    ssl_certificate_key /etc/ssl/custom/private/default.key;
     location / {
         return 503;
     }
