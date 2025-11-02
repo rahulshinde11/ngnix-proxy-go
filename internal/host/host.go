@@ -131,10 +131,8 @@ func (h *Host) AddLocation(path string, container *Container, extras map[string]
 		}
 	}
 
-	// Enable upstream if multiple containers
-	if len(location.Containers) > 1 {
-		location.UpstreamEnabled = true
-	}
+	// Note: UpstreamEnabled and Upstream ID are set by rebuildHostUpstreams in webserver
+	// This happens after all containers are added to ensure correct upstream assignment
 
 	// Set WebSocket and HTTP flags based on original scheme (like Python version)
 	// Use OriginalScheme to preserve original scheme information before SSL processing
@@ -468,7 +466,36 @@ func (h *Host) RemoveContainer(containerID string) bool {
 		delete(h.Locations, path)
 	}
 
+	// CRITICAL: Remove container from upstreams to prevent routing to offline containers
+	if removed {
+		h.removeContainerFromUpstreams(containerID)
+	}
+
 	return removed
+}
+
+// removeContainerFromUpstreams removes a container from all upstream blocks
+func (h *Host) removeContainerFromUpstreams(containerID string) {
+	// Filter upstreams to remove the specified container
+	updatedUpstreams := make([]*Upstream, 0, len(h.Upstreams))
+	
+	for _, upstream := range h.Upstreams {
+		// Filter containers in this upstream
+		updatedContainers := make([]*Container, 0, len(upstream.Containers))
+		for _, container := range upstream.Containers {
+			if container.ID != containerID {
+				updatedContainers = append(updatedContainers, container)
+			}
+		}
+		
+		// Only keep upstream if it still has containers
+		if len(updatedContainers) > 0 {
+			upstream.Containers = updatedContainers
+			updatedUpstreams = append(updatedUpstreams, upstream)
+		}
+	}
+	
+	h.Upstreams = updatedUpstreams
 }
 
 // IsEmpty checks if the host has any locations with containers

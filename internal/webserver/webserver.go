@@ -945,18 +945,62 @@ func (ws *WebServer) addHost(h *host.Host) {
 			}
 		}
 
-		// Merge upstreams
+		// Merge upstreams - but we'll rebuild them later from locations
 		existingHost.Upstreams = append(existingHost.Upstreams, h.Upstreams...)
 
 		// Update host extras - handle injected configs specially
 		ws.mergeExtras(existingHost.Extras, h.Extras)
+		
+		// CRITICAL: Rebuild upstreams from locations to ensure correct mapping
+		ws.rebuildHostUpstreams(existingHost)
 
 		// Update SSL settings if the new host is secured
 		if h.SSLEnabled && !existingHost.SSLEnabled {
 			existingHost.SetSSL(true, h.SSLFile)
 		}
 	} else {
+		// New host - rebuild upstreams from locations
+		ws.rebuildHostUpstreams(h)
 		ws.hosts[h.Hostname][h.Port] = h
+	}
+}
+
+// rebuildHostUpstreams rebuilds all upstreams for a host based on its locations
+// This ensures each location with multiple containers has a properly linked upstream
+func (ws *WebServer) rebuildHostUpstreams(h *host.Host) {
+	// Clear existing upstreams
+	h.Upstreams = make([]*host.Upstream, 0)
+	
+	// For each location, create an upstream if it has multiple containers
+	for path, location := range h.Locations {
+		if len(location.Containers) > 1 {
+			// Generate unique upstream ID for this location
+			sanitizedPath := strings.ReplaceAll(strings.ReplaceAll(path, "/", "_"), ".", "_")
+			if sanitizedPath == "_" || sanitizedPath == "" {
+				sanitizedPath = "root"
+			}
+			upstreamID := fmt.Sprintf("%s-%d-%s", h.Hostname, h.Port, sanitizedPath)
+			
+			// Set the upstream ID in the location
+			location.Upstream = upstreamID
+			location.UpstreamEnabled = true
+			
+			// Collect all containers for this location
+			containers := make([]*host.Container, 0, len(location.Containers))
+			for _, container := range location.Containers {
+				containers = append(containers, container)
+			}
+			
+			// Add the upstream
+			h.AddUpstream(upstreamID, containers)
+			
+			ws.log.Debug("Created upstream %s with %d containers for location %s on host %s:%d", 
+				upstreamID, len(containers), path, h.Hostname, h.Port)
+		} else if len(location.Containers) == 1 {
+			// Single container - disable upstream, use direct proxy
+			location.UpstreamEnabled = false
+			location.Upstream = ""
+		}
 	}
 }
 
