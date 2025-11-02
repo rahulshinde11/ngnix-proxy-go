@@ -23,7 +23,6 @@ A Docker container for automatically creating nginx configuration based on activ
 - **Self-signed Fallback**: Automatic self-signed certificate generation when ACME fails
 - **Manual SSL Tools**: `getssl` CLI tool for manual certificate management
 - **Debug Support**: Integrated Delve debugger for development
-- **Health Checks**: Built-in health monitoring endpoints for operational visibility
 - **Structured Logging**: JSON and text log formats with configurable levels and context
 - **Enhanced Error Handling**: Comprehensive error handling with retry logic and detailed diagnostics
 - **Multi-platform**: Support for linux/amd64 and linux/arm64 architectures
@@ -104,9 +103,9 @@ The following directories can be mounted as volumes to persist configurations:
 
 Environment variables for customizing behavior:
 - `CLIENT_MAX_BODY_SIZE` (default: 1m) - Default max body size for all servers
-- `NGINX_CONF_DIR` (default: ./nginx) - Nginx configuration directory
-- `CHALLENGE_DIR` (default: ./acme-challenges) - ACME challenge directory
-- `SSL_DIR` (default: ./ssl) - SSL certificates directory
+- `NGINX_CONF_DIR` (default: /etc/nginx in containers, ./nginx for local dev) - Nginx configuration directory
+- `CHALLENGE_DIR` (default: /tmp/acme-challenges in containers, ./acme-challenges for local dev) - ACME challenge directory
+- `SSL_DIR` (default: /etc/ssl/custom in containers, ./ssl for local dev) - SSL certificates directory
 - `DEFAULT_HOST` (default: true) - Enable default server configuration
 - `GO_DEBUG_ENABLE` (default: false) - Enable debug mode
 - `GO_DEBUG_PORT` (default: 2345) - Debug port for Delve debugger
@@ -212,15 +211,6 @@ Enable basic auth using the `PROXY_BASIC_AUTH` environment variable:
 ```
 
 Note: Basic auth is ignored for non-HTTPS connections.
-
-### Health Checks
-
-The application includes comprehensive health monitoring capabilities (currently implemented as a library, integration planned for future releases):
-
-- **Health Endpoints**: `/health` (detailed JSON), `/ready` (readiness), `/live` (liveness)
-- **Component Monitoring**: Nginx configuration validation, Docker daemon connectivity
-- **Operational Visibility**: Detailed status reporting with latency metrics
-- **Kubernetes Ready**: Compatible with orchestration platform health probes
 
 ### Default Server
 
@@ -365,7 +355,6 @@ The comprehensive test suite provides extensive coverage across all major functi
 - ✅ **Configuration Options**: Environment variables, default server, custom nginx directives
 
 #### **Test Statistics**
-- **Coverage**: 70%+ code coverage across critical paths
 - **Test Categories**: 8 distinct test suites with specialized focus areas
 - **Container Scenarios**: 15+ real container configurations tested
 - **SSL Scenarios**: Certificate issuance, renewal, and error handling
@@ -539,10 +528,20 @@ The development container includes comprehensive debugging support:
 The application features advanced logging and error handling capabilities:
 
 - **Structured Logging:** JSON and text formats with configurable log levels (DEBUG, INFO, WARN, ERROR)
-- **Context-Aware:** All log entries include relevant context information and correlation IDs
+- **Context-Aware:** All log entries include relevant context information
 - **Error Recovery:** Automatic retry logic with exponential backoff for transient failures
-- **Detailed Diagnostics:** Comprehensive error messages with stack traces and operation context
-- **Configurable Output:** Logs can be written to files, stdout, or external systems
+- **Detailed Diagnostics:** Comprehensive error messages with operation context
+- **Configurable Output:** Logs can be written to files or stdout
+
+### Health Monitoring
+
+The project includes a comprehensive health check library in `internal/health/`:
+
+- **Health Check Components:** Nginx configuration validation, Docker daemon connectivity
+- **Status Management:** Healthy, degraded, and unhealthy status levels
+- **Metrics Support:** Extensible metrics collection and reporting
+
+**Note:** The health check library is currently not exposed as HTTP endpoints. Integration is planned for future releases. The library provides the foundation for `/health`, `/ready`, and `/live` endpoints when implemented.
 
 #### Debug Environment Variables
 
@@ -584,10 +583,13 @@ nginx-proxy-go/
 ├── internal/          # Internal packages
 │   ├── acme/         # ACME/Let's Encrypt integration
 │   ├── config/       # Configuration handling
+│   ├── constants/    # Application constants
 │   ├── container/    # Container management
 │   ├── debug/        # Debug mode support
+│   ├── dockerapi/    # Docker API client wrapper
 │   ├── errors/       # Error handling
 │   ├── event/        # Event processing
+│   ├── health/       # Health check library (not yet exposed as endpoints)
 │   ├── host/         # Host configuration
 │   ├── logger/       # Logging
 │   ├── nginx/        # Nginx configuration
@@ -595,6 +597,8 @@ nginx-proxy-go/
 │   ├── server/       # Server management
 │   ├── ssl/          # SSL certificate management
 │   └── webserver/    # Main web server
+├── integration/      # Integration and E2E tests
+│   └── e2e/         # End-to-end test suites
 ├── nginx/            # Nginx configuration files
 ├── templates/        # Nginx configuration templates
 ├── Dockerfile        # Multi-stage container definition
@@ -602,6 +606,7 @@ nginx-proxy-go/
 ├── docker-compose-prod.yaml # Production environment
 ├── docker-compose.override.yml # Local overrides
 ├── dev.sh           # Development workflow script
+├── test.sh          # Test runner script
 ├── build.sh         # Build script
 ├── run.sh           # Production run script
 ├── run-debug.sh     # Debug run script
@@ -620,6 +625,11 @@ nginx-proxy-go/
 - **ACME Integration** (`internal/acme/`): Let's Encrypt certificate automation
 - **Processors** (`internal/processor/`): Basic auth, redirects, default server handling
 - **Configuration** (`internal/config/`): Environment variable and configuration management
+- **Docker API** (`internal/dockerapi/`): Docker client wrapper for container operations
+- **Event Processing** (`internal/event/`): Docker event handling and processing
+- **Health Checks** (`internal/health/`): Health check library (not yet exposed as HTTP endpoints)
+- **Structured Logging** (`internal/logger/`): Advanced logging with multiple formats and levels
+- **Error Handling** (`internal/errors/`): Comprehensive error handling with retry logic
 - **Debug Support** (`internal/debug/`): Delve debugger integration
 - **CLI Tools** (`cmd/getssl/`): Manual SSL certificate management
 
