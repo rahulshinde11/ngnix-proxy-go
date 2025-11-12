@@ -53,6 +53,7 @@ type Location struct {
 	ContainerPath    string
 	WebSocket        bool
 	HTTP             bool
+	GRPC             bool
 	BasicAuth        bool
 	BasicAuthFile    string
 	InjectedConfigs  []string
@@ -153,9 +154,21 @@ func (h *Host) AddLocation(path string, container *Container, extras map[string]
 	}
 	location.WebSocket = isWebSocket
 
-	// Set HTTP flag - true for http/https schemes
-	isHTTP := originalScheme == "http" || originalScheme == "https" ||
-		container.Scheme == "http" || container.Scheme == "https"
+	// Check both container scheme and original host scheme for gRPC
+	isGRPC := container.Scheme == "grpc" || container.Scheme == "grpcs" ||
+		originalScheme == "grpc" || originalScheme == "grpcs"
+
+	// Check if flags are explicitly set in extras (from processor)
+	if grpcStr, ok := extras["grpc"]; ok {
+		if grpcBool, err := strconv.ParseBool(grpcStr); err == nil {
+			isGRPC = grpcBool
+		}
+	}
+	location.GRPC = isGRPC
+
+	// Set HTTP flag - true for http/https schemes, but exclude gRPC
+	isHTTP := (originalScheme == "http" || originalScheme == "https" ||
+		container.Scheme == "http" || container.Scheme == "https") && !isGRPC
 
 	if httpStr, ok := extras["http"]; ok {
 		if httpBool, err := strconv.ParseBool(httpStr); err == nil {
@@ -292,6 +305,12 @@ func ParseVirtualHost(virtualHost string) (*VirtualHostConfig, error) {
 	} else if strings.HasPrefix(hostPart, "ws://") {
 		scheme = "ws"
 		hostPart = strings.TrimPrefix(hostPart, "ws://")
+	} else if strings.HasPrefix(hostPart, "grpcs://") {
+		scheme = "grpcs"
+		hostPart = strings.TrimPrefix(hostPart, "grpcs://")
+	} else if strings.HasPrefix(hostPart, "grpc://") {
+		scheme = "grpc"
+		hostPart = strings.TrimPrefix(hostPart, "grpc://")
 	}
 
 	// Parse hostname and server port from external part
@@ -341,6 +360,12 @@ func ParseVirtualHost(virtualHost string) (*VirtualHostConfig, error) {
 			} else if strings.HasPrefix(internalPart, "http://") {
 				containerScheme = "http"
 				internalPart = strings.TrimPrefix(internalPart, "http://")
+			} else if strings.HasPrefix(internalPart, "grpcs://") {
+				containerScheme = "grpcs"
+				internalPart = strings.TrimPrefix(internalPart, "grpcs://")
+			} else if strings.HasPrefix(internalPart, "grpc://") {
+				containerScheme = "grpc"
+				internalPart = strings.TrimPrefix(internalPart, "grpc://")
 			}
 			// Parse remaining part for port and path
 			if strings.Contains(internalPart, ":") {

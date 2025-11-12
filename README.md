@@ -16,6 +16,7 @@ A Docker container for automatically creating nginx configuration based on activ
 - **SSL Automation**: Automatic Let's Encrypt SSL certificate registration and renewal
 - **Basic Authentication**: Global and path-specific basic auth support
 - **WebSocket Support**: Full WebSocket proxy support with proper headers
+- **gRPC Support**: Native gRPC and gRPCs (secure gRPC) proxy with HTTP/2
 - **Virtual Hosts**: Multiple virtual hosts on same container with VIRTUAL_HOST1, VIRTUAL_HOST2, etc.
 - **Redirection**: Domain redirection support with PROXY_FULL_REDIRECT
 - **Default Server**: Default server configuration for unmatched requests
@@ -130,6 +131,10 @@ Virtual host configuration examples:
 | example.com/api | http://example.com/api | /api | exposed port |
 | example.com/api/ -> / | http://example.com/api | / | exposed port |
 | wss://example.com/websocket | wss://example.com/websocket | / | exposed port |
+| grpc://api.example.com | grpc://api.example.com | / | 50051 (default) |
+| grpc://api.example.com -> :50051 | grpc://api.example.com | / | 50051 |
+| grpcs://api.example.com | grpcs://api.example.com | / | exposed port |
+| grpc://api.example.com/v1 | grpc://api.example.com/v1 | /v1 | 50051 (default) |
 
 ### WebSocket Support
 
@@ -138,6 +143,32 @@ To enable WebSocket support, explicitly configure the WebSocket endpoint in the 
 ```bash
 -e "VIRTUAL_HOST=wss://ws.example.com -> :8080/websocket"
 ```
+
+### gRPC Support
+
+The proxy supports both gRPC and gRPCs (secure gRPC) with native HTTP/2 proxying. Configure gRPC services using the `grpc://` or `grpcs://` scheme:
+
+```bash
+# Basic gRPC
+-e "VIRTUAL_HOST=grpc://api.example.com -> :50051"
+
+# Secure gRPC with SSL
+-e "VIRTUAL_HOST=grpcs://api.example.com -> :50051"
+
+# gRPC with path routing
+-e "VIRTUAL_HOST=grpc://api.example.com/v1/users -> :50051"
+
+# Sharing port 443 with HTTPS and gRPCs
+-e "VIRTUAL_HOST1=https://api.example.com/ -> :8080"
+-e "VIRTUAL_HOST2=grpcs://api.example.com/grpc -> :50051"
+
+# All protocols on same domain (HTTP, WebSocket, and gRPC)
+-e "VIRTUAL_HOST1=https://app.example.com/ -> :3000"
+-e "VIRTUAL_HOST2=wss://app.example.com/ws -> :3001"
+-e "VIRTUAL_HOST3=grpcs://app.example.com/api -> :50051"
+```
+
+**Note**: gRPC requires HTTP/2, which is automatically enabled for all SSL connections. The default port for gRPC is 50051.
 
 ### Multiple Virtual Hosts
 

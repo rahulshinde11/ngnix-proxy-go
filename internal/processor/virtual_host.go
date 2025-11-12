@@ -374,8 +374,8 @@ func parseHostEntry(hostConfig string) (*host.Host, string, *host.Container, map
 	h.Scheme = config.Scheme
 	h.OriginalScheme = config.Scheme // Preserve original scheme for WebSocket detection
 
-	// Set SSL if enabled (for https or wss schemes)
-	if config.Scheme == "https" || config.Scheme == "wss" {
+	// Set SSL if enabled (for https, wss, or grpcs schemes)
+	if config.Scheme == "https" || config.Scheme == "wss" || config.Scheme == "grpcs" {
 		h.SetSSL(true, config.Hostname)
 	}
 
@@ -405,11 +405,38 @@ func parseHostEntry(hostConfig string) (*host.Host, string, *host.Container, map
 		location = "/"
 	}
 
+	// Add gRPC flag to extras if this is a gRPC virtual host
+	if _, ok := extrasMap["grpc"]; !ok {
+		extrasMap["grpc"] = fmt.Sprintf("%v", config.Scheme == "grpc" || config.Scheme == "grpcs")
+	}
+
 	// Create container data
+	containerPort := config.ContainerPort
+	containerScheme := config.ContainerScheme
+	
+	// Default container scheme to match external scheme for gRPC if not explicitly set
+	if containerScheme == "http" && (config.Scheme == "grpc" || config.Scheme == "grpcs") {
+		containerScheme = config.Scheme
+	}
+	
+	if containerPort == 0 {
+		// Set default ports based on container scheme
+		switch containerScheme {
+		case "grpcs":
+			containerPort = 443
+		case "grpc":
+			containerPort = 50051 // Default gRPC port
+		case "https", "wss":
+			containerPort = 443
+		default:
+			containerPort = 80
+		}
+	}
+
 	containerData := &host.Container{
 		Address: config.Hostname,
-		Port:    config.ContainerPort,
-		Scheme:  config.ContainerScheme,
+		Port:    containerPort,
+		Scheme:  containerScheme,
 		Path:    location,
 	}
 
