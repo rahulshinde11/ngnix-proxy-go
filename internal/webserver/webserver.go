@@ -141,6 +141,10 @@ func (ws *WebServer) Start(ctx context.Context) error {
 		ws.log.Warn("Failed to create default SSL certificate: %v", err)
 	}
 
+	// Capture current time for event processing to avoid race conditions
+	// We want to capture events that happen while we are scanning containers
+	since := fmt.Sprintf("%d", time.Now().Unix())
+
 	// Initial container scan
 	if err := ws.rescanAllContainers(); err != nil {
 		return errors.New(errors.ErrorTypeContainer, "failed to scan containers", err)
@@ -149,8 +153,8 @@ func (ws *WebServer) Start(ctx context.Context) error {
 	// Print reachable networks
 	fmt.Printf("Reachable Networks : %v\n", ws.networks)
 
-	// Start event processing
-	if err := ws.eventProcessor.Start(); err != nil {
+	// Start event processing from the time before we started scanning
+	if err := ws.eventProcessor.StartSince(since); err != nil {
 		return errors.New(errors.ErrorTypeSystem, "failed to start event processor", err)
 	}
 

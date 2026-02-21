@@ -53,8 +53,18 @@ func NewProcessor(client dockerapi.Client, handler EventHandler) *Processor {
 
 // Start begins processing Docker events
 func (p *Processor) Start() error {
+	return p.StartSince("")
+}
+
+// StartSince begins processing Docker events since a specific time
+func (p *Processor) StartSince(since string) error {
+	options := types.EventsOptions{}
+	if since != "" {
+		options.Since = since
+	}
+
 	// Start event stream
-	events, errs := p.client.Events(p.ctx, types.EventsOptions{})
+	events, errs := p.client.Events(p.ctx, options)
 
 	// Start event processing goroutine
 	go p.processEvents(events, errs)
