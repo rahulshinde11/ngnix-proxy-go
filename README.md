@@ -19,6 +19,7 @@ A Docker container for automatically creating nginx configuration based on activ
 - **gRPC Support**: Native gRPC and gRPCs (secure gRPC) proxy with HTTP/2
 - **Virtual Hosts**: Multiple virtual hosts on same container with VIRTUAL_HOST1, VIRTUAL_HOST2, etc.
 - **Redirection**: Domain redirection support with PROXY_FULL_REDIRECT
+- **IP Filtering / Trusted Proxy**: Restrict access by IP range with `allow`/`deny` directives and resolve real client IPs behind reverse proxies (e.g., Cloudflare)
 - **Default Server**: Default server configuration for unmatched requests
 - **SSL Management**: Complete SSL certificate lifecycle management with renewal
 - **Self-signed Fallback**: Automatic self-signed certificate generation when ACME fails
@@ -112,6 +113,9 @@ Environment variables for customizing behavior:
 - `GO_DEBUG_PORT` (default: 2345) - Debug port for Delve debugger
 - `GO_DEBUG_HOST` (default: "") - Debug host binding (empty for all interfaces)
 - `LETSENCRYPT_API` (default: https://acme-v02.api.letsencrypt.org/directory) - ACME API URL for SSL certificates
+- `TRUSTED_PROXY_IPS` - Comma-separated CIDR ranges to allow (generates `allow`/`deny all` nginx directives). Example: `173.245.48.0/20,103.21.244.0/22`
+- `REAL_IP_HEADER` - Header name for resolving real client IP (e.g., `CF-Connecting-IP`). Requires `TRUSTED_PROXY_IPS`
+- `REAL_IP_RECURSIVE` (default: on) - Whether to recursively search for the real client IP (`on`/`off`)
 
 ### Virtual Host Configuration
 
@@ -243,6 +247,64 @@ Enable basic auth using the `PROXY_BASIC_AUTH` environment variable:
 
 Note: Basic auth is ignored for non-HTTPS connections.
 
+### IP Filtering / Trusted Proxy
+
+Restrict incoming connections to specific IP ranges and resolve real client IPs behind trusted reverse proxies (e.g., Cloudflare, AWS ALB).
+
+#### Global Configuration (on the proxy container)
+
+Set environment variables on the nginx-proxy-go container to apply IP filtering to all virtual hosts:
+
+```bash
+docker run --network frontend \
+    --name nginx-proxy-go \
+    -v /var/run/docker.sock:/var/run/docker.sock:ro \
+    -e TRUSTED_PROXY_IPS="173.245.48.0/20,103.21.244.0/22,197.234.240.0/22" \
+    -e REAL_IP_HEADER="CF-Connecting-IP" \
+    -e REAL_IP_RECURSIVE="on" \
+    -p 80:80 -p 443:443 \
+    shinde11/nginx-proxy
+```
+
+This generates the following nginx directives in every server block:
+
+```nginx
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 197.234.240.0/22;
+real_ip_header CF-Connecting-IP;
+real_ip_recursive on;
+
+allow 173.245.48.0/20;
+allow 103.21.244.0/22;
+allow 197.234.240.0/22;
+deny all;
+```
+
+#### Per-Container Override (labels on proxied containers)
+
+Override the global IP filter for a specific container using labels:
+
+```bash
+docker run --network frontend \
+    -l VIRTUAL_HOST="app.example.com" \
+    -l PROXY_TRUSTED_IPS="10.0.0.0/8,192.168.0.0/16" \
+    -l PROXY_REAL_IP_HEADER="X-Forwarded-For" \
+    myapp
+```
+
+| Label | Description |
+|-------|-------------|
+| `PROXY_TRUSTED_IPS` | Overrides global `TRUSTED_PROXY_IPS` for this host (fully replaces, not additive) |
+| `PROXY_REAL_IP_HEADER` | Overrides global `REAL_IP_HEADER` for this host |
+
+#### Notes
+
+- Bare IPs (without a CIDR mask) are automatically converted to `/32` (IPv4) or `/128` (IPv6)
+- `REAL_IP_HEADER` requires `TRUSTED_PROXY_IPS` to be set; without trusted IPs, no `set_real_ip_from` directives are generated
+- If only `TRUSTED_PROXY_IPS` is set (without `REAL_IP_HEADER`), only `allow`/`deny` directives are generated
+- Per-container labels fully override the global config (they do not merge)
+
 ### Default Server
 
 By default, requests to unregistered server names return a 503 error. To forward these requests to a container, add:
@@ -367,6 +429,7 @@ The comprehensive test suite provides extensive coverage across all major functi
 - **Error Handling**: Retry logic, context propagation, error categorization
 - **Virtual Host Processing**: VIRTUAL_HOST parsing, scheme detection, extras handling
 - **Basic Authentication**: Credential processing, htpasswd compatibility, user validation
+- **IP Filtering**: CIDR parsing/validation, global and per-container config, trusted proxy resolution
 - **SSL Certificate Management**: Certificate validation, expiry checking, renewal logic
 
 #### **Integration Tests** (`go test -tags=integration ./integration/...`)
@@ -654,7 +717,7 @@ nginx-proxy-go/
 - **WebServer** (`internal/webserver/`): Core nginx proxy server with Docker integration
 - **SSL Manager** (`internal/ssl/`): Complete SSL certificate lifecycle management
 - **ACME Integration** (`internal/acme/`): Let's Encrypt certificate automation
-- **Processors** (`internal/processor/`): Basic auth, redirects, default server handling
+- **Processors** (`internal/processor/`): Basic auth, IP filtering, redirects, default server handling
 - **Configuration** (`internal/config/`): Environment variable and configuration management
 - **Docker API** (`internal/dockerapi/`): Docker client wrapper for container operations
 - **Event Processing** (`internal/event/`): Docker event handling and processing

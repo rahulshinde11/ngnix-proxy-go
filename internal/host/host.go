@@ -26,6 +26,11 @@ type Host struct {
 	OriginalScheme   string // Preserve original scheme for WebSocket detection
 	IsStatic         bool
 	Extras           *ExtrasMap
+	IPFilterEnabled  bool
+	AllowedIPs       []string // CIDR ranges for allow directives
+	DenyAll          bool
+	RealIPHeader     string
+	RealIPRecursive  string
 }
 
 // Upstream represents a group of backend servers
@@ -240,6 +245,15 @@ func (h *Host) SetLocationBasicAuth(path string, enabled bool, authFile string) 
 	} else {
 		log.Printf("Location %s not found on host %s", path, h.Hostname)
 	}
+}
+
+// SetIPFilter configures IP filtering for the host
+func (h *Host) SetIPFilter(allowedIPs []string, denyAll bool, realIPHeader, realIPRecursive string) {
+	h.IPFilterEnabled = true
+	h.AllowedIPs = allowedIPs
+	h.DenyAll = denyAll
+	h.RealIPHeader = realIPHeader
+	h.RealIPRecursive = realIPRecursive
 }
 
 // AddInjectedConfig adds an injected configuration line to a location

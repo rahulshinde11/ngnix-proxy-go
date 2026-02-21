@@ -26,6 +26,11 @@ type Config struct {
 	DebugEnabled bool
 	DebugPort    int
 	DebugHost    string
+
+	// IP filtering / trusted proxy configuration
+	TrustedProxyIPs []string // From TRUSTED_PROXY_IPS
+	RealIPHeader    string   // From REAL_IP_HEADER
+	RealIPRecursive string   // From REAL_IP_RECURSIVE (default "on")
 }
 
 // ValidationError represents a configuration validation error
@@ -56,6 +61,11 @@ func NewConfig() *Config {
 		DebugEnabled: getEnvBool("GO_DEBUG_ENABLE", false),
 		DebugPort:    getEnvInt("GO_DEBUG_PORT", constants.DefaultDebugPort),
 		DebugHost:    getEnv("GO_DEBUG_HOST", ""),
+
+		// IP filtering / trusted proxy
+		TrustedProxyIPs: parseCommaSeparated(os.Getenv("TRUSTED_PROXY_IPS")),
+		RealIPHeader:    getEnv("REAL_IP_HEADER", ""),
+		RealIPRecursive: getEnv("REAL_IP_RECURSIVE", "on"),
 	}
 
 	// Ensure directories end with a slash
@@ -161,6 +171,25 @@ func getEnvInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+// parseCommaSeparated splits a comma-separated string into trimmed, non-empty parts
+func parseCommaSeparated(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // ensureTrailingSlash ensures a path ends with a slash

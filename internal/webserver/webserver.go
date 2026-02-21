@@ -40,6 +40,7 @@ type WebServer struct {
 	mu                     sync.RWMutex
 	template               *nginx.Template
 	basicAuthProcessor     *processor.BasicAuthProcessor
+	ipFilterProcessor      *processor.IPFilterProcessor
 	redirectProcessor      *processor.RedirectProcessor
 	defaultServerProcessor *processor.DefaultServerProcessor
 	certificateManager     *ssl.CertificateManager
@@ -74,6 +75,7 @@ func NewWebServer(dockerClient dockerapi.Client, cfg *config.Config, nginxInstan
 		containers:             make(map[string]*appcontainer.Container),
 		networks:               make(map[string]string),
 		basicAuthProcessor:     processor.NewBasicAuthProcessor(filepath.Join(cfg.ConfDir, "basic_auth")),
+		ipFilterProcessor:      processor.NewIPFilterProcessor(cfg, logger),
 		redirectProcessor:      processor.NewRedirectProcessor(logger),
 		defaultServerProcessor: processor.NewDefaultServerProcessor(logger),
 		certificateManager:     certManager,
@@ -549,6 +551,7 @@ func (ws *WebServer) rescanAllContainers() error {
 				ws.log.Debug("Configured virtual host: %s:%d for container %s", hostname, h.Port, c.ID)
 			}
 			ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
+			ws.ipFilterProcessor.ProcessIPFilter(env, hostsByPort)
 
 			// Add hosts to the web server
 			for _, h := range hosts {
@@ -700,6 +703,7 @@ func (ws *WebServer) updateContainer(containerID string) error {
 			ws.log.Debug("Configured virtual host: %s:%d for container %s", hostname, h.Port, containerID)
 		}
 		ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
+		ws.ipFilterProcessor.ProcessIPFilter(env, hostsByPort)
 
 		// Add hosts to the web server
 		for _, h := range hosts {
@@ -763,6 +767,7 @@ func (ws *WebServer) updateContainerLocked(containerID string) error {
 			ws.log.Debug("Configured virtual host: %s:%d for container %s", hostname, h.Port, containerID)
 		}
 		ws.basicAuthProcessor.ProcessBasicAuth(env, hostsByPort)
+		ws.ipFilterProcessor.ProcessIPFilter(env, hostsByPort)
 
 		// Add hosts to the web server
 		for _, h := range hosts {
